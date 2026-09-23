@@ -111,6 +111,12 @@ that you stop asking where things are.
 
 Everything is drawn from VS Code's own theme tokens, so it matches whatever you're using.
 
+<details>
+<summary>The whole board in one shot</summary>
+
+<img src="media/board.png" alt="The full panel: tasks, state block, and three feed cards" width="380">
+</details>
+
 ---
 
 ## How it works
