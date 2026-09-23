@@ -60,6 +60,7 @@ function readFeed() {
     if (!st.isFile()) continue;
     const ext = path.extname(name).toLowerCase();
     if (!IMG_EXT.has(ext) && !TEXT_EXT.has(ext)) continue;
+    if (/\.caption\.md$/i.test(name)) continue;   // belongs to its image card
     items.push({ abs, name, ext, mtime: st.mtimeMs, kind: IMG_EXT.has(ext) ? 'image' : 'text' });
   }
   items.sort((a, b) => (a.mtime === b.mtime ? a.name.localeCompare(b.name) : a.mtime - b.mtime));

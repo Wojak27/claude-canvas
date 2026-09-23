@@ -19,3 +19,8 @@
   can reveal the board — including over Remote-SSH.
 - Claude Code plugin: a skill, `canvas` on Claude's PATH, a SessionStart hook that opens the board,
   and a PostToolUse hook that puts any image Claude reads on the feed.
+
+## 0.4.1
+- Caption sidecars (`<image>.caption.md`) no longer render as a card of their own on top of the
+  image card they belong to.
+- README: screenshots and an animation, all generated from the real renderer by `scripts/`.

@@ -2,7 +2,7 @@
   "name": "claude-canvas",
   "displayName": "Claude Canvas",
   "description": "A live board Claude Code can write to: current work state, notes and images.",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "publisher": "local",
   "license": "MIT",
   "engines": {
