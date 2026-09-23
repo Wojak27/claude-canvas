@@ -8,6 +8,8 @@ A VS Code side panel that Claude Code can write to. Top to bottom:
   section per session, newest first. Click a row to tick it off; the markdown file is rewritten in
   place, so Claude and you are editing the same list. `@mentions` and `#tags` render as chips.
 - **State** — `.claude/canvas/state.md`. What is running, what is done, what is next.
+- **Live** — one block per `.claude/canvas/live/<name>.sh`: the script's stdout, re-run on the
+  interval in its `# every:` header while the board is visible. Trusted workspaces only.
 - **Feed** — cards in `.claude/canvas/feed/`, newest first. Images render inline; `.md` renders as markdown.
 
 No IPC, no server: the extension watches the folder and re-renders. Anything that can write a
@@ -56,6 +58,7 @@ code, images (relative paths resolve against the card's own folder), plus a `pro
 | `claudeCanvas.newestFirst` | `true` | Newest card at the top |
 | `claudeCanvas.maxCards` | `60` | Cards rendered |
 | `claudeCanvas.autoReveal` | `always` | Reveal the board when a new card appears |
+| `claudeCanvas.liveBlocks` | `true` | Re-run the scripts in `live/` while the board is visible |
 
 Commands: **Show Board**, **Open Board in Editor Tab**, **Open tasks.md**, **Start Task Session**,
 **Clear Feed**, **Reveal Canvas Folder** — all under `Claude Canvas:`.

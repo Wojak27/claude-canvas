@@ -1,8 +1,8 @@
 {
   "name": "claude-canvas",
   "displayName": "Claude Canvas",
-  "description": "A live board Claude Code can write to: current work state, notes and images.",
-  "version": "0.4.1",
+  "description": "A live board Claude Code can write to: current work state, live command output, notes and images.",
+  "version": "0.5.0",
   "publisher": "local",
   "license": "MIT",
   "engines": {
@@ -18,6 +18,12 @@
   "activationEvents": [
     "onStartupFinished"
   ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "Live blocks run the shell scripts in .claude/canvas/live/, so they stay paused until the workspace is trusted."
+    }
+  },
   "contributes": {
     "viewsContainers": {
       "activitybar": [
@@ -89,6 +95,11 @@
           ],
           "default": "always",
           "description": "Reveal the board automatically when a new feed card appears."
+        },
+        "claudeCanvas.liveBlocks": {
+          "type": "boolean",
+          "default": true,
+          "description": "Re-run the scripts in live/ on their interval while the board is visible (trusted workspaces only)."
         }
       }
     }

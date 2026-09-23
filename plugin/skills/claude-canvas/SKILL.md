@@ -38,6 +38,25 @@ MD
 
 Update it when a phase starts and when it finishes. A stale state block is worse than none.
 
+## Live blocks: status that refreshes itself
+
+When the status you would put in `state.md` comes from a command — a job queue, a log tail, a
+metrics file, GPU use — register the command instead of pasting its output once. The extension
+re-runs it on a timer while the board is visible, so it never goes stale:
+
+~~~bash
+canvas live add jobs --every 60s --title "Running jobs" <<'SH'
+squeue -u "$USER" -o '%.10i %.30j %.8T %.10M %.10l' | sed 's/^/    /'
+SH
+~~~
+
+The script's stdout is markdown (indent or fence raw text; `progress` blocks work). It runs from
+the workspace root with a 30 s timeout. `add` runs it once and prints the result: check that
+output, since that is exactly what the user sees. Pick an interval that matches how fast the
+thing changes (a training queue: 1–5 min, not 5 s). `canvas live ls`, `canvas live run <name>`,
+`canvas live rm <name>` when the job is over. Read `.claude/canvas/live/<name>.md` to see what the
+block currently shows.
+
 ## Tasks
 
 The top block is `tasks.md`: one `##` section per session, newest first. Both of you edit it —

@@ -9,6 +9,9 @@
 #   canvas task done|undo|rm <n ...>    by the number from `canvas task list`
 #   canvas task list                    print the numbered task list
 #   canvas task cleardone               drop finished tasks
+#   canvas live add <name> [--every 60s] [--title T]
+#                                       a block that re-runs a script (stdin) on a timer
+#   canvas live run|rm <name> | ls      run once and print | remove | list
 #   canvas rm <name> | clear            remove one card | every card
 #   canvas open                         bring the board up in VS Code
 #   canvas path                         print the canvas folder
@@ -146,6 +149,59 @@ else:
             print('%3d %s %s' % (n, '[x]' if m.group(3).lower() == 'x' else '[ ]', m.group(4)))
 PYEOF
     ;;
+  live)
+    # The extension re-runs live/<name>.sh while the board is visible and shows its stdout.
+    sub="${1:-ls}"; shift || true
+    live="$root/live"
+    ws="$(cd "$root/../.." && pwd)"
+    mkdir -p "$live"
+    runone() {
+      local out
+      out="$(cd "$ws" && bash "$live/$1.sh")" || { echo "canvas live: $1 exited non-zero; the board keeps its last output" >&2; return 1; }
+      printf '%s\n' "$out" > "$live/$1.md.tmp" && mv "$live/$1.md.tmp" "$live/$1.md"
+      printf '%s\n' "$out"
+    }
+    case "$sub" in
+      add)
+        name="$(slug "${1:-}")"; shift || true
+        [ -n "$name" ] || { echo "canvas live add: need a name" >&2; exit 1; }
+        every=60s; title=""
+        while [ "$#" -gt 0 ]; do
+          case "$1" in
+            --every) every="$2"; shift 2 ;;
+            --title) title="$2"; shift 2 ;;
+            *) echo "canvas live add: unknown option $1" >&2; exit 1 ;;
+          esac
+        done
+        body="$(cat)"
+        [ -n "$body" ] || { echo "canvas live add: script goes on stdin" >&2; exit 1; }
+        {
+          printf '#!/usr/bin/env bash\n# every: %s\n' "$every"
+          [ -n "$title" ] && printf '# title: %s\n' "$title"
+          printf '%s\n' "$body"
+        } > "$live/$name.sh.tmp"
+        mv "$live/$name.sh.tmp" "$live/$name.sh"
+        runone "$name"
+        ;;
+      run)
+        [ -f "$live/${1:-}.sh" ] || { echo "canvas live: no block ${1:-}" >&2; exit 1; }
+        runone "$1"
+        ;;
+      rm)
+        for n in "$@"; do rm -f "$live/$n.sh" "$live/$n.md"; done
+        ;;
+      ls|list)
+        for f in "$live"/*.sh; do
+          [ -f "$f" ] || continue
+          n="$(basename "$f" .sh)"
+          e="$(sed -n 's/^#[[:space:]]*every:[[:space:]]*//p' "$f" | head -1)"
+          t="$(sed -n 's/^#[[:space:]]*title:[[:space:]]*//p' "$f" | head -1)"
+          printf '%-20s every %-6s %s\n' "$n" "${e:-60s}" "$t"
+        done
+        ;;
+      *) echo "canvas live: add | run | rm | ls" >&2; exit 1 ;;
+    esac
+    ;;
   rm)
     for n in "$@"; do rm -f "$feed/$n" "$feed/${n%.*}.caption.md"; done
     ;;
@@ -157,5 +213,5 @@ PYEOF
     : > "$root/.open"
     ;;
   path) echo "$root" ;;
-  *) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//' ;;
 esac

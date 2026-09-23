@@ -24,3 +24,11 @@
 - Caption sidecars (`<image>.caption.md`) no longer render as a card of their own on top of the
   image card they belong to.
 - README: screenshots and an animation, all generated from the real renderer by `scripts/`.
+
+## 0.5.0
+- Live blocks: `live/<name>.sh` is re-run on the interval in its `# every:` header while the board
+  is visible, and its stdout is rendered as a pinned block. Updates are swapped in place, so a
+  refresh never clears a half-typed task. Runs have a 30 s timeout that kills the whole process
+  group, never overlap, and a failure keeps the last good output. Trusted workspaces only;
+  `claudeCanvas.liveBlocks` turns them off.
+- `canvas live add|run|ls|rm`.

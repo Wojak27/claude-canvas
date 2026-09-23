@@ -4,17 +4,26 @@ const fs = require('fs');
 const path = require('path');
 const md = require('./markdown.js');
 const tasks = require('./tasks.js');
+const live = require('./live.js');
 
 const IMG_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp', '.avif']);
 const TEXT_EXT = new Set(['.md', '.markdown', '.txt', '.log', '.json', '.csv']);
 
 const cfg = () => vscode.workspace.getConfiguration('claudeCanvas');
 
-function canvasDir() {
+function workspaceRoot() {
   const ws = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders[0];
-  if (!ws) return null;
-  return path.join(ws.uri.fsPath, cfg().get('folder', '.claude/canvas'));
+  return ws ? ws.uri.fsPath : null;
 }
+
+function canvasDir() {
+  const root = workspaceRoot();
+  return root ? path.join(root, cfg().get('folder', '.claude/canvas')) : null;
+}
+
+// Live blocks run scripts from the workspace, so only in a trusted one, and only when enabled.
+const liveAllowed = () => vscode.workspace.isTrusted && cfg().get('liveBlocks', true);
+let runner = null;
 
 function tasksFile() {
   const dir = canvasDir();
@@ -156,6 +165,33 @@ function tasksHtml() {
 </details>`;
 }
 
+function every(s) {
+  return s % 3600 === 0 ? `${s / 3600}h` : s % 60 === 0 ? `${s / 60}m` : `${s}s`;
+}
+
+function liveHtml(webview) {
+  const dir = canvasDir();
+  if (!dir) return '';
+  return live.list(dir).map((b) => {
+    const m = (runner && runner.meta.get(b.name)) || {};
+    let status;
+    if (!vscode.workspace.isTrusted) status = 'paused \u00b7 workspace not trusted';
+    else if (!cfg().get('liveBlocks', true)) status = 'paused \u00b7 claudeCanvas.liveBlocks is off';
+    else if (m.running && !m.at) status = 'running\u2026';
+    else if (m.at) status = `${new Date(m.at).toLocaleTimeString()} \u00b7 every ${every(b.every)}${m.running ? ' \u00b7 running\u2026' : ''}`;
+    else status = `every ${every(b.every)}`;
+    let body = '';
+    try { if (fs.existsSync(b.out)) body = md.render(fs.readFileSync(b.out, 'utf8'), imgResolver(webview, dir)); } catch (e) {}
+    const err = m.at && m.code !== 0
+      ? `<pre class="code err"><code>exit ${m.code}${m.err ? '\n' + md.escapeHtml(m.err) : ''}</code></pre>` : '';
+    return `<div class="state live"><div class="lhead"><span class="ltitle" data-open="${md.escapeHtml(b.script)}"` +
+      ` title="Open ${md.escapeHtml(path.basename(b.script))}">${md.escapeHtml(b.title)}</span>` +
+      `<span class="cmeta">${md.escapeHtml(status)}</span>` +
+      `<button class="x" data-rerun="${md.escapeHtml(b.name)}" title="Run now">\u21bb</button></div>` +
+      `${body || (err ? '' : '<p class="lwait">waiting for the first run\u2026</p>')}${err}</div>`;
+  }).join('\n');
+}
+
 function buildHtml(webview, extUri) {
   const dir = canvasDir();
   const nonce = String(Math.random()).slice(2) + String(Date.now());
@@ -269,6 +305,12 @@ img.inline-img { max-width:100%; border-radius:4px; }
 .pfill { display:block; height:100%; background:var(--vscode-progressBar-background,#4aa3ff); }
 .ppct { flex:none; width:3.2em; text-align:right; opacity:.8; font-variant-numeric:tabular-nums; }
 .pnote { flex:0 1 auto; min-width:0; opacity:.55; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.state.live { margin-top:-6px; }
+.lhead { display:flex; align-items:center; gap:8px; font-size:.85em; margin-bottom:2px; min-width:0; }
+.ltitle { font-weight:600; letter-spacing:.03em; text-transform:uppercase; opacity:.8; cursor:pointer;
+  min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.ltitle:hover { text-decoration:underline; }
+.lwait { opacity:.55; font-size:.9em; }
 .empty { opacity:.6; padding:24px 4px; line-height:1.6; }
 .err { color:var(--vscode-errorForeground); }
 </style></head><body>
@@ -279,6 +321,7 @@ img.inline-img { max-width:100%; border-radius:4px; }
 </div>
 ${tasksPane}
 ${state ? `<div class="state">${state}</div>` : ''}
+<div id="live">${liveHtml(webview)}</div>
 ${cards || (state ? '' : '<div class="empty">Nothing on the board yet.<br>Claude writes <code>state.md</code> and drops cards into <code>feed/</code>.</div>')}
 <script nonce="${nonce}">
 const vs = acquireVsCodeApi();
@@ -302,10 +345,17 @@ if (nt) nt.addEventListener('keydown', (e) => {
 document.addEventListener('click', (e) => {
   const row = e.target.closest('[data-task]');
   if (row) { row.classList.toggle('done'); vs.postMessage({ type: 'task', action: 'toggle', idx: +row.dataset.task }); return; }
+  const rr = e.target.closest('[data-rerun]');
+  if (rr) { vs.postMessage({ type: 'rerun', name: rr.dataset.rerun }); return; }
   const del = e.target.closest('[data-del]');
   if (del) { vs.postMessage({ type: 'delete', path: del.dataset.del }); return; }
   const open = e.target.closest('[data-open]');
   if (open) vs.postMessage({ type: 'open', path: open.dataset.open });
+});
+// live blocks are swapped in place, so a refresh never clobbers a half-typed task
+window.addEventListener('message', (e) => {
+  const lv = document.getElementById('live');
+  if (e.data && e.data.type === 'live' && lv) lv.innerHTML = e.data.html;
 });
 const y = (vs.getState() || {}).scroll || 0;
 window.scrollTo(0, y);
@@ -335,6 +385,8 @@ function wire(webview, extUri, ctx) {
       try { fs.unlinkSync(m.path); } catch (e) {}
       try { fs.unlinkSync(m.path.replace(/\.[^.]+$/, '.caption.md')); } catch (e) {}
       webview.html = buildHtml(webview, extUri);
+    } else if (m.type === 'rerun') {
+      if (runner && liveAllowed()) { runner.invalidate(m.name); runner.tick(false); }
     } else if (m.type === 'clear') {
       await vscode.commands.executeCommand('claudeCanvas.clearFeed');
     } else if (m.type === 'task') {
@@ -395,14 +447,29 @@ function activate(ctx) {
     }, 150);
   };
 
+  const pushLive = () => {
+    for (const b of boards) {
+      if (b.visible !== false) b.webview.postMessage({ type: 'live', html: liveHtml(b.webview) });
+    }
+  };
+  runner = live.createRunner(canvasDir, workspaceRoot, pushLive);
+  // Only spend cycles on live blocks while someone can see them.
+  const anyVisible = () => [...boards].some((b) => b.visible !== false);
+  const tickLive = (force) => { if (liveAllowed() && anyVisible()) runner.tick(force); };
+  const ticker = setInterval(() => tickLive(false), live.MIN_EVERY * 1000);
+  ctx.subscriptions.push({ dispose: () => { clearInterval(ticker); runner.dispose(); } });
+  ctx.subscriptions.push(vscode.workspace.onDidGrantWorkspaceTrust(() => { refresh(); tickLive(true); }));
+
   const provider = {
     resolveWebviewView(view) {
       view.webview.options = { enableScripts: true, localResourceRoots: [ctx.extensionUri, vscode.Uri.file('/')] };
       boards.add(view);
       wire(view.webview, ctx.extensionUri, ctx);
-      view.onDidChangeVisibility(() => { if (view.visible) view.webview.html = buildHtml(view.webview, ctx.extensionUri); });
+      view.onDidChangeVisibility(() => {
+        if (view.visible) { view.webview.html = buildHtml(view.webview, ctx.extensionUri); tickLive(false); }
+      });
       view.onDidDispose(() => boards.delete(view));
-      setTimeout(refresh, 0);
+      setTimeout(() => { refresh(); tickLive(false); }, 0);
     },
   };
   ctx.subscriptions.push(vscode.window.registerWebviewViewProvider('claudeCanvas.board', provider,
@@ -460,15 +527,29 @@ function activate(ctx) {
   if (dir) {
     try {
       const w = fs.watch(dir, { recursive: true }, (_ev, name) => {
-        schedule(!!name && String(name).startsWith('feed'));
+        const n = String(name || '');
+        if (n.startsWith('live') && !n.endsWith('.sh')) return; // runner output, pushed in place
+        if (n.startsWith('live')) {
+          runner.invalidate(path.basename(n, '.sh'));
+          schedule(false);
+          setTimeout(() => tickLive(false), 200);
+          return;
+        }
+        schedule(n.startsWith('feed'));
       });
       ctx.subscriptions.push({ dispose: () => w.close() });
     } catch (e) {
       const fsw = vscode.workspace.createFileSystemWatcher(
         new vscode.RelativePattern(vscode.Uri.file(dir), '**/*'));
-      fsw.onDidChange(() => schedule(false));
-      fsw.onDidCreate(() => schedule(true));
-      fsw.onDidDelete(() => schedule(false));
+      const isLive = (u) => path.relative(dir, u.fsPath).startsWith('live');
+      const isOutput = (u) => isLive(u) && !u.fsPath.endsWith('.sh');
+      fsw.onDidChange((u) => {
+        if (isOutput(u)) return;
+        schedule(false);
+        if (isLive(u)) { runner.invalidate(path.basename(u.fsPath, '.sh')); tickLive(false); }
+      });
+      fsw.onDidCreate((u) => { if (!isOutput(u)) schedule(!isLive(u)); if (isLive(u)) tickLive(false); });
+      fsw.onDidDelete((u) => { if (!isOutput(u)) schedule(false); });
       ctx.subscriptions.push(fsw);
     }
   }
@@ -476,7 +557,7 @@ function activate(ctx) {
   setTimeout(consumeSentinel, 400);
 
   ctx.subscriptions.push(vscode.workspace.onDidChangeConfiguration((e) => {
-    if (e.affectsConfiguration('claudeCanvas')) refresh();
+    if (e.affectsConfiguration('claudeCanvas')) { refresh(); tickLive(false); }
   }));
 }
 

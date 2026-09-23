@@ -105,6 +105,25 @@ MD
 Pinned above the feed. Each `progress` line is `label: <percent> | optional note`. The point is
 that you stop asking where things are.
 
+### Status that refreshes itself
+
+When the status comes from a command — a job queue, a log tail, GPU use — register the command
+instead of pasting its output once:
+
+```bash
+canvas live add jobs --every 60s --title "Running jobs" <<'SH'
+echo '| job | state | time |'; echo '|---|---|---|'
+squeue -u "$USER" -h -o '| %j | %T | %M / %l |'
+SH
+```
+
+That writes `.claude/canvas/live/jobs.sh`, runs it once, and prints what the board will show. From
+then on the extension re-runs it every 60 s while the board is visible and swaps the output in
+place, so a refresh never eats a half-typed task. Runs start in the workspace root, time out after
+30 s, and never overlap. A failed run shows its exit code and stderr under the last good output
+instead of replacing it. Edit the script and it re-runs at once; ↻ on the block re-runs it by hand.
+`# every: 5m` and `# title: …` in a script's first lines configure it (at least 5 s).
+
 ### Light theme, obviously
 
 <img src="media/board-light.png" alt="The same board rendered in a light VS Code theme" width="300">
@@ -125,6 +144,7 @@ Everything is drawn from VS Code's own theme tokens, so it matches whatever you'
 .claude/canvas/
 ├── tasks.md        the collapsible block at the top
 ├── state.md        the pinned status
+├── live/           blocks that re-run a command: jobs.sh, and its last output jobs.md
 ├── feed/           cards, newest first
 │   ├── 20260923-141800-depth.png
 │   ├── 20260923-141800-depth.caption.md
@@ -152,6 +172,8 @@ hook that pushes every image Claude reads. Turn the automatic parts off with
 | `canvas task list` | Numbered list — read before editing |
 | `canvas task done\|undo\|rm <n…>` | By those numbers |
 | `canvas task cleardone` | Drop finished rows |
+| `canvas live add <name> [--every 60s] [--title T]` | Live block from a script on stdin; runs it once and prints the output |
+| `canvas live run\|rm <name>` · `canvas live ls` | Run once now · remove · list |
 | `canvas open` | Bring the panel up |
 | `canvas clear` | Remove every card |
 
@@ -172,6 +194,7 @@ megabyte of parser.
 | `claudeCanvas.newestFirst` | `true` | Newest card at the top |
 | `claudeCanvas.maxCards` | `60` | Cards rendered |
 | `claudeCanvas.autoReveal` | `always` | Reveal the board when a new card appears |
+| `claudeCanvas.liveBlocks` | `true` | Re-run the scripts in `live/` while the board is visible |
 
 Commands, under `Claude Canvas:` — Show Board, Open Board in Editor Tab, Open tasks.md,
 Start Task Session, Clear Feed, Reveal Canvas Folder.
@@ -181,6 +204,9 @@ Start Task Session, Clear Feed, Reveal Canvas Folder.
 - The webview's `localResourceRoots` includes `/`, so a card can show an image from anywhere on
   the machine — renders usually live outside the repo. It's broader than the usual webview
   sandbox; worth a look before installing somewhere shared.
+- Live blocks mean the extension runs shell scripts it finds in `.claude/canvas/live/`. A repo could
+  ship one, so they only run in a [trusted workspace](https://code.visualstudio.com/docs/editor/workspace-trust),
+  and `claudeCanvas.liveBlocks: false` turns them off. Consider gitignoring `.claude/canvas/`.
 - Requires VS Code 1.85+, plus `bash` and `python3` for the CLI.
 - Works over Remote-SSH: the extension is `workspace`-kind, so it runs where your files are.
 
@@ -189,7 +215,7 @@ Start Task Session, Clear Feed, Reveal Canvas Folder.
 Issues and PRs welcome — it's a small codebase and an easy one to poke at.
 
 ```bash
-extension/          the panel: extension.js, markdown.js, tasks.js, build.sh
+extension/          the panel: extension.js, markdown.js, tasks.js, live.js, build.sh
 plugin/             the Claude Code plugin: skill, hooks, bin/canvas
 scripts/            screenshot pipeline — ./scripts/screenshots.sh regenerates every image above
 ```

@@ -1,7 +1,8 @@
 # Contributing
 
 Small codebase, no build step, no dependencies. `extension/extension.js` is the webview and the
-host; `markdown.js` is the renderer; `tasks.js` is the `tasks.md` reader/writer.
+host; `markdown.js` is the renderer; `tasks.js` is the `tasks.md` reader/writer;
+`live.js` runs the live-block scripts.
 
 ## Working on the panel
 
