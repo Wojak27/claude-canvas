@@ -1,0 +1,110 @@
+{
+  "name": "claude-canvas",
+  "displayName": "Claude Canvas",
+  "description": "A live board Claude Code can write to: current work state, notes and images.",
+  "version": "0.4.0",
+  "publisher": "local",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "extensionKind": [
+    "workspace"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "claudeCanvas",
+          "title": "Claude Canvas",
+          "icon": "media/canvas.svg"
+        }
+      ]
+    },
+    "views": {
+      "claudeCanvas": [
+        {
+          "type": "webview",
+          "id": "claudeCanvas.board",
+          "name": "Board"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "claudeCanvas.focus",
+        "title": "Claude Canvas: Show Board"
+      },
+      {
+        "command": "claudeCanvas.openPanel",
+        "title": "Claude Canvas: Open Board in Editor Tab"
+      },
+      {
+        "command": "claudeCanvas.clearFeed",
+        "title": "Claude Canvas: Clear Feed"
+      },
+      {
+        "command": "claudeCanvas.revealFolder",
+        "title": "Claude Canvas: Reveal Canvas Folder"
+      },
+      {
+        "command": "claudeCanvas.openTasks",
+        "title": "Claude Canvas: Open tasks.md"
+      },
+      {
+        "command": "claudeCanvas.newSession",
+        "title": "Claude Canvas: Start Task Session"
+      }
+    ],
+    "configuration": {
+      "title": "Claude Canvas",
+      "properties": {
+        "claudeCanvas.folder": {
+          "type": "string",
+          "default": ".claude/canvas",
+          "description": "Canvas folder, relative to the workspace root. Holds state.md and feed/."
+        },
+        "claudeCanvas.newestFirst": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the most recent feed card at the top."
+        },
+        "claudeCanvas.maxCards": {
+          "type": "number",
+          "default": 60,
+          "description": "Maximum number of feed cards to render."
+        },
+        "claudeCanvas.autoReveal": {
+          "type": "string",
+          "enum": [
+            "always",
+            "never"
+          ],
+          "default": "always",
+          "description": "Reveal the board automatically when a new feed card appears."
+        }
+      }
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Wojak27/claude-canvas.git"
+  },
+  "homepage": "https://github.com/Wojak27/claude-canvas#readme",
+  "keywords": [
+    "claude",
+    "claude-code",
+    "agent",
+    "dashboard",
+    "images",
+    "tasks",
+    "webview"
+  ]
+}

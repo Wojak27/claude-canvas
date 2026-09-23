@@ -1,0 +1,161 @@
+#!/usr/bin/env bash
+# canvas — push content to the Claude Canvas board in VS Code.
+#
+#   canvas show <image> [caption ...]   add an image card (symlinked, --copy to copy)
+#   canvas note [title ...]             add a markdown card, body on stdin
+#   canvas state [file.md]              replace the pinned state block (stdin or file)
+#   canvas task session [title ...]     open a new session block in tasks.md
+#   canvas task add <text ...>          add a task to the newest session
+#   canvas task done|undo|rm <n ...>    by the number from `canvas task list`
+#   canvas task list                    print the numbered task list
+#   canvas task cleardone               drop finished tasks
+#   canvas rm <name> | clear            remove one card | every card
+#   canvas open                         bring the board up in VS Code
+#   canvas path                         print the canvas folder
+set -euo pipefail
+
+root="${CLAUDE_CANVAS_DIR:-}"
+if [ -z "$root" ]; then
+  d="$PWD"
+  while [ "$d" != "/" ]; do
+    if [ -d "$d/.claude" ]; then root="$d/.claude/canvas"; break; fi
+    d="$(dirname "$d")"
+  done
+fi
+[ -n "$root" ] || { echo "canvas: no .claude directory above $PWD (set CLAUDE_CANVAS_DIR)" >&2; exit 1; }
+feed="$root/feed"
+mkdir -p "$feed"
+
+stamp() { date +%Y%m%d-%H%M%S-%3N; }
+slug() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/^-//;s/-$//' | cut -c1-48; }
+
+cmd="${1:-}"; shift || true
+case "$cmd" in
+  show)
+    copy=0
+    [ "${1:-}" = "--copy" ] && { copy=1; shift; }
+    src="${1:-}"; shift || true
+    [ -f "$src" ] || { echo "canvas: no such image: $src" >&2; exit 1; }
+    src="$(readlink -f "$src")"
+    ext="${src##*.}"
+    base="$(stamp)-$(slug "$(basename "${src%.*}")")"
+    if [ "$copy" = 1 ]; then cp "$src" "$feed/$base.$ext"; else ln -sfn "$src" "$feed/$base.$ext"; fi
+    if [ "$#" -gt 0 ]; then printf '%s\n' "$*" > "$feed/$base.caption.md"; fi
+    echo "$feed/$base.$ext"
+    ;;
+  note)
+    title="${*:-}"
+    base="$(stamp)${title:+-$(slug "$title")}"
+    { [ -n "$title" ] && printf '## %s\n\n' "$title"; cat; } > "$feed/$base.md"
+    echo "$feed/$base.md"
+    ;;
+  state)
+    if [ "${1:-}" != "" ] && [ -f "$1" ]; then cp "$1" "$root/state.md"; else cat > "$root/state.md"; fi
+    echo "$root/state.md"
+    ;;
+  task|tasks)
+    sub="${1:-list}"; shift || true
+    CANVAS_TASKS="$root/tasks.md" CANVAS_SUB="$sub" python3 - "$@" <<'PYEOF'
+import os, re, sys, datetime
+
+f = os.environ['CANVAS_TASKS']
+sub = os.environ['CANVAS_SUB']
+args = sys.argv[1:]
+if not os.path.exists(f):
+    open(f, 'w').write('# Tasks\n')
+lines = open(f).read().split('\n')
+TASK = re.compile(r'^(\s*)([-*])\s+\[([ xX])\]\s+(.*)$')
+HEAD = re.compile(r'^(#{1,6})\s+(.*)$')
+
+def heads():
+    out = []
+    for i, l in enumerate(lines):
+        m = HEAD.match(l)
+        if m:
+            out.append((i, len(m.group(1)), m.group(2)))
+    return out
+
+def level():
+    hs = [h[1] for h in heads()]
+    if not hs:
+        return 2
+    lv = min(hs)
+    if lv == 1 and hs.count(1) == 1:
+        deeper = [h for h in hs if h > 1]
+        return min(deeper) if deeper else 2
+    return lv
+
+def task_lines():
+    return [i for i, l in enumerate(lines) if TASK.match(l)]
+
+def save():
+    open(f, 'w').write('\n'.join(lines))
+
+if sub == 'session':
+    title = ' '.join(args) or datetime.date.today().isoformat()
+    lv = level()
+    at = next((i for i, l, t in heads() if l >= lv), len(lines))
+    lines[at:at] = ['#' * lv + ' ' + title, '']
+    save()
+    print(title)
+
+elif sub == 'add':
+    text = ' '.join(args)
+    if not text:
+        sys.exit('canvas task add: nothing to add')
+    lv = level()
+    hs = [h for h in heads() if h[1] == lv]
+    if not hs:
+        at = next((i for i, l, t in heads() if l >= lv), len(lines))
+        lines[at:at] = ['#' * lv + ' ' + datetime.date.today().isoformat(), '']
+        hs = [h for h in heads() if h[1] == lv]
+    start = hs[0][0]
+    end = next((i for i, l, t in heads() if i > start and l <= lv), len(lines))
+    while end > start + 1 and not lines[end - 1].strip():
+        end -= 1
+    lines[end:end] = ['- [ ] ' + text]
+    save()
+    print(text)
+
+elif sub in ('done', 'undo', 'rm'):
+    idx = task_lines()
+    for n in sorted({int(a) for a in args if a.isdigit()}, reverse=True):
+        if not 1 <= n <= len(idx):
+            print('canvas: no task %d' % n, file=sys.stderr)
+            continue
+        i = idx[n - 1]
+        if sub == 'rm':
+            del lines[i]
+        else:
+            lines[i] = re.sub(r'\[[ xX]\]', '[x]' if sub == 'done' else '[ ]', lines[i], count=1)
+    save()
+
+elif sub == 'cleardone':
+    lines[:] = [l for l in lines if not (TASK.match(l) and TASK.match(l).group(3).lower() == 'x')]
+    save()
+
+else:
+    n = 0
+    for l in lines:
+        h = HEAD.match(l)
+        m = TASK.match(l)
+        if h:
+            print('\n' + h.group(2))
+        elif m:
+            n += 1
+            print('%3d %s %s' % (n, '[x]' if m.group(3).lower() == 'x' else '[ ]', m.group(4)))
+PYEOF
+    ;;
+  rm)
+    for n in "$@"; do rm -f "$feed/$n" "$feed/${n%.*}.caption.md"; done
+    ;;
+  clear)
+    find "$feed" -maxdepth 1 -type f -delete 2>/dev/null || true
+    find "$feed" -maxdepth 1 -type l -delete 2>/dev/null || true
+    ;;
+  open)
+    : > "$root/.open"
+    ;;
+  path) echo "$root" ;;
+  *) sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//' ;;
+esac

@@ -1,0 +1,14 @@
+{
+  "name": "claude-canvas",
+  "owner": {
+    "name": "Karol Wojtulewicz",
+    "url": "https://github.com/Wojak27"
+  },
+  "plugins": [
+    {
+      "name": "claude-canvas",
+      "source": "./plugin",
+      "description": "Let Claude Code show you images, current state and a shared task list in a VS Code side panel."
+    }
+  ]
+}

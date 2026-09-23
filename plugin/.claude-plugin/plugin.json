@@ -1,0 +1,14 @@
+{
+  "name": "claude-canvas",
+  "displayName": "Claude Canvas",
+  "version": "0.4.0",
+  "description": "Gives Claude Code a place to show you things: images in a VS Code side panel instead of file paths, a live state block, and a task list you both edit.",
+  "author": {
+    "name": "Karol Wojtulewicz",
+    "url": "https://github.com/Wojak27"
+  },
+  "homepage": "https://github.com/Wojak27/claude-canvas#readme",
+  "repository": "https://github.com/Wojak27/claude-canvas",
+  "license": "MIT",
+  "keywords": ["vscode", "images", "tasks", "dashboard", "visibility"]
+}
