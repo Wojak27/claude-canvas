@@ -12,22 +12,42 @@
 #   canvas live add <name> [--every 60s] [--title T]
 #                                       a block that re-runs a script (stdin) on a timer
 #   canvas live run|rm <name> | ls      run once and print | remove | list
+#   canvas widget [title ...]           an interactive chart/table card, JSON spec on stdin
+#   canvas title <text ...>             name this conversation's board
 #   canvas rm <name> | clear            remove one card | every card
 #   canvas open                         bring the board up in VS Code
-#   canvas path                         print the canvas folder
+#   canvas path                         print this conversation's board folder
+#
+# Each Claude Code conversation writes to its own board. CLAUDE_CANVAS_SESSION picks it (the
+# plugin's SessionStart hook sets it); CLAUDE_CANVAS_SESSION=shared writes to the Shared board.
 set -euo pipefail
 
-root="${CLAUDE_CANVAS_DIR:-}"
-if [ -z "$root" ]; then
+top="${CLAUDE_CANVAS_DIR:-}"
+if [ -z "$top" ]; then
   d="$PWD"
   while [ "$d" != "/" ]; do
-    if [ -d "$d/.claude" ]; then root="$d/.claude/canvas"; break; fi
+    # ~/.claude is Claude Code's own config, not a project
+    if [ -d "$d/.claude" ] && [ "$d" != "${HOME:-}" ]; then top="$d/.claude/canvas"; break; fi
     d="$(dirname "$d")"
   done
 fi
-[ -n "$root" ] || { echo "canvas: no .claude directory above $PWD (set CLAUDE_CANVAS_DIR)" >&2; exit 1; }
+[ -n "$top" ] || { echo "canvas: no project .claude directory above $PWD (set CLAUDE_CANVAS_DIR)" >&2; exit 1; }
+
+session="$(printf '%s' "${CLAUDE_CANVAS_SESSION:-${CLAUDE_CODE_SESSION_ID:-shared}}" | tr -cd 'A-Za-z0-9_-')"
+if [ -z "$session" ] || [ "$session" = shared ]; then
+  session=shared; root="$top"
+else
+  root="$top/sessions/$session"
+fi
 feed="$root/feed"
 mkdir -p "$feed"
+[ -f "$top/.gitignore" ] || printf '# Claude Canvas board state: local, per machine\n*\n' > "$top/.gitignore"
+if [ "$session" != shared ] && [ ! -f "$root/meta.json" ]; then
+  CANVAS_META="$root/meta.json" CANVAS_ID="$session" python3 -c '
+import json, os, datetime
+json.dump({"id": os.environ["CANVAS_ID"], "title": "", "started": datetime.datetime.now().isoformat(timespec="seconds")},
+          open(os.environ["CANVAS_META"], "w"), indent=2)'
+fi
 
 stamp() { date +%Y%m%d-%H%M%S-%3N; }
 slug() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/^-//;s/-$//' | cut -c1-48; }
@@ -153,11 +173,30 @@ PYEOF
     # The extension re-runs live/<name>.sh while the board is visible and shows its stdout.
     sub="${1:-ls}"; shift || true
     live="$root/live"
-    ws="$(cd "$root/../.." && pwd)"
+    # scripts run from the workspace root the extension recorded, same as when it runs them
+    ws="$(head -1 "$top/.workspace" 2>/dev/null || true)"
+    [ -d "$ws" ] || ws="$(cd "$top/../.." && pwd)"
     mkdir -p "$live"
+    status() {  # name exit ms stderr-file
+      CANVAS_ST="$live/$1.status.json" python3 - "$2" "$3" "$4" <<'PYEOF'
+import json, os, sys, datetime
+code, ms, errf = int(sys.argv[1]), int(sys.argv[2]), sys.argv[3]
+err = open(errf).read().strip() if os.path.exists(errf) else ''
+json.dump({"exit": code, "stderr": err, "at": datetime.datetime.now().astimezone().isoformat(timespec="seconds"), "ms": ms},
+          open(os.environ["CANVAS_ST"], "w"), indent=2)
+PYEOF
+    }
     runone() {
-      local out
-      out="$(cd "$ws" && bash "$live/$1.sh")" || { echo "canvas live: $1 exited non-zero; the board keeps its last output" >&2; return 1; }
+      local out code t0 errf
+      errf="$(mktemp)"; t0="$(date +%s%3N)"
+      set +e; out="$(cd "$ws" && bash "$live/$1.sh" 2>"$errf")"; code=$?; set -e
+      status "$1" "$code" "$(( $(date +%s%3N) - t0 ))" "$errf"
+      if [ "$code" -ne 0 ]; then
+        cat "$errf" >&2; rm -f "$errf"
+        echo "canvas live: $1 exited $code; the board keeps its last output" >&2
+        return 1
+      fi
+      rm -f "$errf"
       printf '%s\n' "$out" > "$live/$1.md.tmp" && mv "$live/$1.md.tmp" "$live/$1.md"
       printf '%s\n' "$out"
     }
@@ -188,19 +227,77 @@ PYEOF
         runone "$1"
         ;;
       rm)
-        for n in "$@"; do rm -f "$live/$n.sh" "$live/$n.md"; done
+        for n in "$@"; do rm -f "$live/$n.sh" "$live/$n.md" "$live/$n.status.json"; done
         ;;
       ls|list)
-        for f in "$live"/*.sh; do
-          [ -f "$f" ] || continue
-          n="$(basename "$f" .sh)"
-          e="$(sed -n 's/^#[[:space:]]*every:[[:space:]]*//p' "$f" | head -1)"
-          t="$(sed -n 's/^#[[:space:]]*title:[[:space:]]*//p' "$f" | head -1)"
-          printf '%-20s every %-6s %s\n' "$n" "${e:-60s}" "$t"
-        done
+        # name, interval, last run (from status.json: whoever ran it last, CLI or extension), title
+        CANVAS_LIVE="$live" python3 - <<'PYEOF'
+import glob, json, os, re, datetime
+live = os.environ["CANVAS_LIVE"]
+for f in sorted(glob.glob(os.path.join(live, "*.sh"))):
+    name = os.path.basename(f)[:-3]
+    head = open(f).read().split("\n")[:15]
+    get = lambda k: next((m.group(1) for l in head for m in [re.match(r"^#\s*%s\s*:\s*(.+?)\s*$" % k, l)] if m), "")
+    st, last = os.path.join(live, name + ".status.json"), "never run"
+    if os.path.exists(st):
+        s = json.load(open(st))
+        age = (datetime.datetime.now().astimezone() - datetime.datetime.fromisoformat(s["at"])).total_seconds()
+        ago = "%ds" % age if age < 60 else "%dm" % (age // 60) if age < 3600 else "%dh" % (age // 3600)
+        last = ("ok" if s["exit"] == 0 else "FAILED exit %d" % s["exit"]) + ", " + ago + " ago"
+        if s["exit"] != 0 and s.get("stderr"):
+            last += " -- " + s["stderr"].splitlines()[-1][:80]
+    print("%-18s every %-5s %-28s %s" % (name, get("every") or "60s", last, get("title")))
+PYEOF
         ;;
       *) echo "canvas live: add | run | rm | ls" >&2; exit 1 ;;
     esac
+    ;;
+  widget)
+    # Validates the spec (same rules as the extension) so a bad one fails here, not as a red card.
+    title="${*:-}"
+    spec="$(cat)"
+    ws="$(head -1 "$top/.workspace" 2>/dev/null || true)"
+    [ -d "$ws" ] || ws="$(cd "$top/../.." && pwd)"
+    CANVAS_SPEC="$spec" CANVAS_WS="$ws" python3 - <<'PYEOF' || exit 1
+import json, os, sys
+try:
+    s = json.loads(os.environ["CANVAS_SPEC"])
+except Exception as e:
+    sys.exit("canvas widget: spec is not valid JSON: %s" % e)
+errs, t = [], s.get("type") if isinstance(s, dict) else None
+if t not in ("line", "bar", "scatter", "heatmap", "stat", "table"):
+    errs.append('"type" must be one of line, bar, scatter, heatmap, stat, table')
+elif t == "stat":
+    if not s.get("items"): errs.append('a stat widget needs "items": [{"label", "value"}]')
+else:
+    if not isinstance(s.get("data"), list) and not isinstance(s.get("src"), str):
+        errs.append('needs "data" (array of rows) or "src" (a data file)')
+    if isinstance(s.get("src"), str):
+        p = s["src"] if os.path.isabs(s["src"]) else os.path.join(os.environ["CANVAS_WS"], s["src"])
+        if not os.path.exists(p): errs.append("src not found: %s (relative paths are from the workspace root)" % p)
+    if t in ("line", "bar", "scatter"):
+        if not s.get("x"): errs.append('a %s widget needs "x"' % t)
+        if not s.get("y"): errs.append('a %s widget needs "y"' % t)
+        if s.get("series") and isinstance(s.get("y"), list): errs.append('use "series" or a list of "y" columns, not both')
+    if t == "heatmap" and not (s.get("x") and s.get("y") and s.get("value")):
+        errs.append('a heatmap needs "x", "y" and "value"')
+if errs: sys.exit("canvas widget: " + "; ".join(errs))
+PYEOF
+    [ -n "$title" ] || title="$(printf '%s' "$spec" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("title") or "widget")')"
+    out="$feed/$(stamp)-$(slug "$title").widget.json"
+    printf '%s\n' "$spec" > "$out"
+    echo "$out"
+    ;;
+  title)
+    [ "$session" != shared ] || { echo "canvas title: the Shared board has a fixed name" >&2; exit 1; }
+    CANVAS_META="$root/meta.json" python3 - "$*" <<'PYEOF'
+import json, os, sys
+p = os.environ["CANVAS_META"]
+m = json.load(open(p)) if os.path.exists(p) else {}
+m["title"] = sys.argv[1].strip()[:80]
+json.dump(m, open(p, "w"), indent=2)
+print(m["title"])
+PYEOF
     ;;
   rm)
     for n in "$@"; do rm -f "$feed/$n" "$feed/${n%.*}.caption.md"; done
@@ -210,8 +307,9 @@ PYEOF
     find "$feed" -maxdepth 1 -type l -delete 2>/dev/null || true
     ;;
   open)
-    : > "$root/.open"
+    # the sentinel lives at the top; its content says which board to show
+    printf '%s\n' "$session" > "$top/.open"
     ;;
   path) echo "$root" ;;
-  *) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *) sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//' ;;
 esac

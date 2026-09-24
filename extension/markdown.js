@@ -1,7 +1,8 @@
 'use strict';
 // Tiny dependency-free markdown -> HTML. Enough for a status board:
 // headings, lists, task lists, tables, quotes, rules, fenced code,
-// a `progress` fenced block, images, links and inline formatting.
+// a `progress` fenced block, a `widget` fenced block (handed to opts.widget), images, links and
+// inline formatting.
 
 function escapeHtml(s) {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -35,7 +36,7 @@ function progressBlock(body) {
   return `<div class="progress">${rows.join('')}</div>`;
 }
 
-function render(md, resolveImg) {
+function render(md, resolveImg, opts = {}) {
   const lines = md.replace(/\r\n/g, '\n').split('\n');
   const out = [];
   let i = 0;
@@ -57,8 +58,9 @@ function render(md, resolveImg) {
       while (i < lines.length && !/^\s*```+\s*$/.test(lines[i])) buf.push(lines[i++]);
       i++;
       const body = buf.join('\n');
-      out.push(lang === 'progress' ? progressBlock(body)
-        : `<pre class="code"><code>${escapeHtml(body)}</code></pre>`);
+      if (lang === 'progress') out.push(progressBlock(body));
+      else if (lang === 'widget' && opts.widget) out.push(opts.widget(body));
+      else out.push(`<pre class="code"><code>${escapeHtml(body)}</code></pre>`);
       continue;
     }
 
@@ -77,7 +79,7 @@ function render(md, resolveImg) {
       closeLists();
       const buf = [];
       while (i < lines.length && /^\s*>\s?/.test(lines[i])) buf.push(lines[i++].replace(/^\s*>\s?/, ''));
-      out.push(`<blockquote>${render(buf.join('\n'), resolveImg)}</blockquote>`);
+      out.push(`<blockquote>${render(buf.join('\n'), resolveImg, opts)}</blockquote>`);
       continue;
     }
 

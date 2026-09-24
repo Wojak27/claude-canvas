@@ -18,7 +18,7 @@ const stub = {
   Uri: { file: p => ({ fsPath: p, toString: () => 'file://' + p }), joinPath: (u, ...r) => ({ fsPath: path.join(u.fsPath, ...r) }) },
   ViewColumn: { Beside: 2, Active: 1 },
   workspace: {
-    workspaceFolders: [{ uri: { fsPath: workspace } }],
+    workspaceFolders: [{ uri: { fsPath: workspace } }], isTrusted: true,
     getConfiguration: () => ({ get: (k, d) => d }),
     createFileSystemWatcher: () => ({ onDidChange() {}, onDidCreate() {}, onDidDelete() {} }),
     onDidChangeConfiguration: () => ({}),
@@ -47,7 +47,11 @@ const TOKENS = {
 };
 const bg = mode === 'light' ? '#f8f8f8' : '#181818';
 
-let html = buildHtml({ cspSource: "'self'", asWebviewUri: u => 'file://' + u.fsPath }, stub.Uri.file(EXT));
+// a board as the extension sees one: the sidebar, following the latest conversation
+let html = buildHtml({
+  kind: 'view', view: { mode: 'follow' }, extUri: stub.Uri.file(EXT), srcs: new Map(),
+  webview: { cspSource: "'self'", asWebviewUri: u => 'file://' + u.fsPath },
+});
 html = html
   .replace(/<meta http-equiv="Content-Security-Policy"[^>]*>/, '')
   .replace('<details class="tasks" id="tasksBlock">', '<details class="tasks" id="tasksBlock" open>')

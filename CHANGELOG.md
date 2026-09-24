@@ -32,3 +32,23 @@
   group, never overlap, and a failure keeps the last good output. Trusted workspaces only;
   `claudeCanvas.liveBlocks` turns them off.
 - `canvas live add|run|ls|rm`.
+
+## 0.6.0
+- One board per conversation: `sessions/<id>/` under the canvas folder, picked by
+  `CLAUDE_CANVAS_SESSION`, which the SessionStart hook sets through `CLAUDE_ENV_FILE`. The top level
+  is the Shared board. A picker follows the latest activity or pins a conversation. Boards are
+  named after the first prompt (UserPromptSubmit hook) or `canvas title`.
+- Editor tabs: ⧉ opens a conversation in a tab and ⤢ opens a single card in one. Each tab keeps
+  its own conversation and is restored after a window reload.
+- Widgets: `line`, `bar`, `scatter`, `heatmap`, `stat` and `table` from a JSON spec, inline or
+  backed by a CSV/JSON/JSONL file that re-renders when it changes. They have hover readouts,
+  legend toggles and a table view, and use a colorblind-validated palette in both themes.
+  `canvas widget` validates specs. The format is in `plugin/skills/claude-canvas/WIDGETS.md`.
+- Live blocks write `live/<name>.status.json` after every run. `canvas live ls` shows ok/FAILED
+  with stderr, and the panel shows the last recorded run until its own first one.
+- A half-typed task survives any board re-render. Webview state is merged, no longer
+  overwritten by the scroll handler.
+- The canvas folder writes its own `.gitignore` and records the workspace root in `.workspace`, so
+  the CLI runs live blocks from the same place the extension does. The CLI no longer treats
+  `~/.claude` as a project.
+- No placeholder `state.md`: it made the Shared board look like the latest activity.

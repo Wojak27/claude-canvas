@@ -124,6 +124,41 @@ place, so a refresh never eats a half-typed task. Runs start in the workspace ro
 instead of replacing it. Edit the script and it re-runs at once; ↻ on the block re-runs it by hand.
 `# every: 5m` and `# title: …` in a script's first lines configure it (at least 5 s).
 
+### Charts you can poke at, not PNGs
+
+For numbers, Claude writes a **widget**, a few lines of JSON, instead of rendering yet another
+image. The board draws it interactive and in your theme:
+
+```bash
+canvas widget <<'JSON'
+{"type": "line", "title": "Validation mAP", "src": "results/train_log.csv",
+ "x": "epoch", "y": "val_mAP", "series": "arm", "yPercent": true}
+JSON
+```
+
+- **Types:** `line`, `bar`, `scatter`, `heatmap`, `stat` (headline numbers with deltas and
+  sparklines) and `table`.
+- **Interaction:** hovering shows a crosshair readout of every series, clicking a legend entry
+  hides a series, and a **Table** button shows the data as a sortable table.
+- **Live data:** point `src` at the CSV your job appends to and the chart follows it, with no
+  re-render step.
+- **Anywhere markdown goes:** a widget also works as a fenced `widget` block in a note, the state
+  block or a live block.
+- **Colors:** from a palette validated for colorblind separation on both VS Code themes.
+- **Format:** [WIDGETS.md](plugin/skills/claude-canvas/WIDGETS.md).
+
+### One board per conversation
+
+Two Claude Code sessions in one repo no longer write over each other. Each conversation gets its
+own board: cards, state, tasks and live blocks. Each board is named after the first prompt of its
+conversation, and `canvas title` renames it. A picker at the top of the panel either **follows
+the latest activity** or pins one conversation. There is also a **Shared** board for anything
+project-wide.
+
+**⧉ opens the conversation in an editor tab**, and **⤢** on any card opens that card in a tab of
+its own, which is handy for a chart. Tabs keep their own choice of conversation and come back
+after a window reload.
+
 ### Light theme, obviously
 
 <img src="media/board-light.png" alt="The same board rendered in a light VS Code theme" width="300">
@@ -142,23 +177,34 @@ Everything is drawn from VS Code's own theme tokens, so it matches whatever you'
 
 ```
 .claude/canvas/
-├── tasks.md        the collapsible block at the top
+├── sessions/<id>/  one board per Claude Code conversation, same layout as below + meta.json
+├── tasks.md        the Shared board: the collapsible block at the top
 ├── state.md        the pinned status
-├── live/           blocks that re-run a command: jobs.sh, and its last output jobs.md
+├── live/           blocks that re-run a command: jobs.sh, its output jobs.md, jobs.status.json
 ├── feed/           cards, newest first
 │   ├── 20260923-141800-depth.png
 │   ├── 20260923-141800-depth.caption.md
+│   ├── 20260923-142500-val-map.widget.json
 │   └── 20260923-143100-v4-vs-v5.md
-└── .open           a sentinel; touching it brings the panel up
+├── .gitignore      `*`: board state is local, and cards symlink absolute paths
+└── .open           a sentinel; writing a session id to it brings that board up
 ```
 
 The extension watches that folder and re-renders. That's the whole design — which means it works
 over Remote-SSH, from a script, from a cron job, or from a different machine writing over a share.
 
-The plugin wires Claude into it: a **skill** describing when the board is the right answer,
-`canvas` on Claude's **PATH**, a **SessionStart** hook that opens the panel, and a **PostToolUse**
-hook that pushes every image Claude reads. Turn the automatic parts off with
-`CLAUDE_CANVAS_AUTO_OPEN=0` and `CLAUDE_CANVAS_AUTO_SHOW=0`.
+The plugin wires Claude into it:
+- a **skill** describing when the board is the right answer
+- `canvas` on Claude's **PATH**
+- a **SessionStart** hook that creates the conversation's board, points `canvas` at it (through
+  `CLAUDE_ENV_FILE`) and opens the panel
+- a **UserPromptSubmit** hook that names the board after the first prompt
+- a **PostToolUse** hook that pushes every image Claude reads
+
+Turn the automatic parts off with `CLAUDE_CANVAS_AUTO_OPEN=0` and `CLAUDE_CANVAS_AUTO_SHOW=0`.
+
+Allow the CLI once and it never prompts: add `"Bash(canvas *)"` to `permissions.allow` in
+`~/.claude/settings.json`. A plugin can't grant itself permissions.
 
 ## The `canvas` command
 
@@ -174,15 +220,22 @@ hook that pushes every image Claude reads. Turn the automatic parts off with
 | `canvas task cleardone` | Drop finished rows |
 | `canvas live add <name> [--every 60s] [--title T]` | Live block from a script on stdin; runs it once and prints the output |
 | `canvas live run\|rm <name>` · `canvas live ls` | Run once now · remove · list |
-| `canvas open` | Bring the panel up |
+| `canvas widget [title]` | Interactive chart/table card from a JSON spec on stdin, validated first |
+| `canvas title <text>` | Name this conversation's board |
+| `canvas path` | Print this conversation's board folder |
+| `canvas open` | Bring the panel up on this conversation |
 | `canvas clear` | Remove every card |
+
+`canvas` writes to the conversation in `CLAUDE_CANVAS_SESSION`, which the plugin sets. Scripts
+and Slurm jobs started from a Claude session inherit it. `CLAUDE_CANVAS_SESSION=shared` writes
+to the Shared board, and so does running `canvas` with no session at all.
 
 Without the plugin it lives at `plugin/bin/canvas` — copy it onto your PATH.
 
 ## Markdown support
 
 Headings, lists, task lists, tables, quotes, rules, links, inline and fenced code, images
-(relative paths resolve against the card's own folder), and `progress` blocks. The renderer is
+(relative paths resolve against the card's own folder), `progress` blocks and `widget` blocks. The renderer is
 ~150 lines and has no dependencies, which is deliberate: a status panel should not ship a
 megabyte of parser.
 
@@ -195,6 +248,7 @@ megabyte of parser.
 | `claudeCanvas.maxCards` | `60` | Cards rendered |
 | `claudeCanvas.autoReveal` | `always` | Reveal the board when a new card appears |
 | `claudeCanvas.liveBlocks` | `true` | Re-run the scripts in `live/` while the board is visible |
+| `claudeCanvas.maxConversations` | `20` | Conversations listed in the picker, most recent first |
 
 Commands, under `Claude Canvas:` — Show Board, Open Board in Editor Tab, Open tasks.md,
 Start Task Session, Clear Feed, Reveal Canvas Folder.
@@ -206,7 +260,10 @@ Start Task Session, Clear Feed, Reveal Canvas Folder.
   sandbox; worth a look before installing somewhere shared.
 - Live blocks mean the extension runs shell scripts it finds in `.claude/canvas/live/`. A repo could
   ship one, so they only run in a [trusted workspace](https://code.visualstudio.com/docs/editor/workspace-trust),
-  and `claudeCanvas.liveBlocks: false` turns them off. Consider gitignoring `.claude/canvas/`.
+  and `claudeCanvas.liveBlocks: false` turns them off. The canvas folder writes its own
+  `.gitignore` (`*`), so neither boards nor scripts end up in a commit by accident.
+- A board's title is the first 60 characters of its conversation's first prompt, kept in
+  `sessions/<id>/meta.json` on this machine. Rename it with `canvas title`.
 - Requires VS Code 1.85+, plus `bash` and `python3` for the CLI.
 - Works over Remote-SSH: the extension is `workspace`-kind, so it runs where your files are.
 
@@ -215,7 +272,9 @@ Start Task Session, Clear Feed, Reveal Canvas Folder.
 Issues and PRs welcome — it's a small codebase and an easy one to poke at.
 
 ```bash
-extension/          the panel: extension.js, markdown.js, tasks.js, live.js, build.sh
+extension/          the panel: extension.js, markdown.js, tasks.js, live.js, widgets.js,
+                    media/widgets.js (the chart renderer), build.sh
+tests/              ./tests/run.sh: CLI, hooks and the extension against a mocked VS Code API
 plugin/             the Claude Code plugin: skill, hooks, bin/canvas
 scripts/            screenshot pipeline — ./scripts/screenshots.sh regenerates every image above
 ```

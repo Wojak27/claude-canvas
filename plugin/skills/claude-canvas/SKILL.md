@@ -1,12 +1,18 @@
 ---
 name: claude-canvas
-description: Show the user images, progress and tasks in the VS Code side panel instead of printing file paths. Use whenever the user says "show me" something visual, when a long-running job needs a visible status, when there is a plan worth tracking across a session, or when the user asks what you are working on. Also use when they mention the canvas, the board, or the panel.
+description: Show the user images, interactive charts and tables (widgets), progress and tasks in the VS Code side panel instead of printing file paths or rendering throwaway PNGs. Use whenever the user says "show me" something visual or asks to plot, chart or compare numbers, when a long-running job needs a visible status, when there is a plan worth tracking across a session, or when the user asks what you are working on. Also use when they mention the canvas, the board, the panel, or widgets.
 ---
 
 # Claude Canvas
 
 A VS Code side panel the user can see while you work. You write files, the panel re-renders.
 The `canvas` command is on your PATH.
+
+**Every conversation has its own board.** `canvas` writes to this conversation's board
+automatically (the plugin sets `CLAUDE_CANVAS_SESSION`); you never touch another conversation's
+cards, state or tasks. Name the board once the work has a shape: `canvas title "Depth head v5"`.
+Write to the project-wide Shared board only when asked: `CLAUDE_CANVAS_SESSION=shared canvas …`.
+The user can follow the latest conversation, pin one, or open any board or card in an editor tab.
 
 ## Show an image
 
@@ -19,6 +25,33 @@ canvas show out/depth.png "Depth map, frame 412"
 
 It is symlinked, so large files cost nothing (`--copy` to copy instead). Never answer a "show me"
 with a bare file path when this is available.
+
+## Plot data with a widget, not a PNG
+
+When the thing to show is **numbers** — a training curve, a comparison across arms, a results
+table — describe it as a widget instead of rendering an image. The board draws it interactive
+(hover readouts, legend toggles, a sortable table view), in the user's theme, and re-draws it
+when its data file changes:
+
+~~~bash
+canvas widget <<'JSON'
+{"type": "line", "title": "Validation mAP by arm", "src": "results/train_log.csv",
+ "x": "epoch", "y": "val_mAP", "series": "arm", "yPercent": true}
+JSON
+~~~
+
+Types: `line` (trends), `bar` (compare categories), `scatter` (≤ 3 groups), `heatmap` (a grid),
+`stat` (headline numbers with deltas), `table`. Point `src` at the CSV/JSON/JSONL the job writes
+rather than inlining a copy, so the widget stays current. `canvas widget` validates the spec and
+fails loudly on a missing column or file — read its error and fix the spec. A widget also works
+inside any markdown the board shows as a fenced ```` ```widget ```` block, including a live
+block's output. The full format, per-type options, and which type fits which data are in
+[WIDGETS.md](WIDGETS.md) next to this skill — read it before your first widget of a session.
+
+Pick the form by the data's job: one number is a `stat`, not a one-bar chart; one run that
+matters among several is `line` with `"emphasis": "<series>"`; two measures of different scale
+are two widgets, never one chart. Keep rendering images for things that are pictures — renders,
+frames, attention maps, qualitative grids — and for publication figures the user asked for.
 
 ## Keep the state block current
 
@@ -82,6 +115,13 @@ canvas clear                     # drop every card
 
 Markdown supports headings, lists, task lists, tables, quotes, code, images, and a `progress`
 fenced block where each line is `label: <percent> | optional note`.
+
+## Your own board, read back
+
+- `canvas path` prints this conversation's board folder.
+- `canvas live ls` shows each live block's last run: `ok`, or `FAILED exit N -- <stderr>`. Check
+  it after registering a block, and when the user says the board looks wrong.
+- `live/<name>.status.json` holds the last run's exit code and stderr, whoever ran it.
 
 ## When not to use it
 

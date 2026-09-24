@@ -10,6 +10,11 @@ A VS Code side panel that Claude Code can write to. Top to bottom:
 - **State** — `.claude/canvas/state.md`. What is running, what is done, what is next.
 - **Live** — one block per `.claude/canvas/live/<name>.sh`: the script's stdout, re-run on the
   interval in its `# every:` header while the board is visible. Trusted workspaces only.
+- **Widgets** — `*.widget.json` cards and ```` ```widget ```` blocks: interactive line, bar, scatter,
+  heatmap, stat and table views of inline or file-backed data.
+
+Each Claude Code conversation has its own board under `.claude/canvas/sessions/<id>/`; the
+top level is the Shared board. A picker switches between them; ⧉ opens a board in an editor tab.
 - **Feed** — cards in `.claude/canvas/feed/`, newest first. Images render inline; `.md` renders as markdown.
 
 No IPC, no server: the extension watches the folder and re-renders. Anything that can write a

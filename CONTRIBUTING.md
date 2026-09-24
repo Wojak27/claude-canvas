@@ -2,7 +2,9 @@
 
 Small codebase, no build step, no dependencies. `extension/extension.js` is the webview and the
 host; `markdown.js` is the renderer; `tasks.js` is the `tasks.md` reader/writer;
-`live.js` runs the live-block scripts.
+`live.js` runs the live-block scripts; `widgets.js` loads widget data and `media/widgets.js` draws
+it in the webview (the format is `plugin/skills/claude-canvas/WIDGETS.md`). `./tests/run.sh` runs
+the CLI, hooks and extension against a mocked VS Code API — run it before a PR.
 
 ## Working on the panel
 

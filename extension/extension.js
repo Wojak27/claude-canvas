@@ -5,9 +5,12 @@ const path = require('path');
 const md = require('./markdown.js');
 const tasks = require('./tasks.js');
 const live = require('./live.js');
+const widgets = require('./widgets.js');
 
 const IMG_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp', '.avif']);
 const TEXT_EXT = new Set(['.md', '.markdown', '.txt', '.log', '.json', '.csv']);
+const SHARED = 'shared';
+const FOLLOW = 'follow';
 
 const cfg = () => vscode.workspace.getConfiguration('claudeCanvas');
 
@@ -16,35 +19,90 @@ function workspaceRoot() {
   return ws ? ws.uri.fsPath : null;
 }
 
+// The canvas folder. The top level is the Shared board; each Claude Code conversation writes to
+// its own board under sessions/<session id>/, with the same layout.
 function canvasDir() {
   const root = workspaceRoot();
   return root ? path.join(root, cfg().get('folder', '.claude/canvas')) : null;
 }
 
+const boardDir = (id) => {
+  const top = canvasDir();
+  if (!top) return null;
+  return id === SHARED ? top : path.join(top, 'sessions', id);
+};
+
 // Live blocks run scripts from the workspace, so only in a trusted one, and only when enabled.
 const liveAllowed = () => vscode.workspace.isTrusted && cfg().get('liveBlocks', true);
 let runner = null;
-
-function tasksFile() {
-  const dir = canvasDir();
-  return dir ? path.join(dir, 'tasks.md') : null;
-}
 
 function ensureDirs() {
   const dir = canvasDir();
   if (!dir) return null;
   try {
+    // no placeholder state.md: writing one would make the Shared board look like the latest activity
     fs.mkdirSync(path.join(dir, 'feed'), { recursive: true });
-    const state = path.join(dir, 'state.md');
-    if (!fs.existsSync(state)) {
-      fs.writeFileSync(state,
-        '# Nothing on the board yet\n\nClaude writes the current state here and drops cards in `feed/`.\n');
-    }
     const t = path.join(dir, 'tasks.md');
     if (!fs.existsSync(t)) fs.writeFileSync(t, '# Tasks\n');
+    // Board state is local and per machine, and cards symlink absolute paths: keep it out of git.
+    const gi = path.join(dir, '.gitignore');
+    if (!fs.existsSync(gi)) fs.writeFileSync(gi, '# Claude Canvas board state: local, per machine\n*\n');
+    // So the CLI runs live blocks from the same place the extension does.
+    const ws = path.join(dir, '.workspace');
+    const root = workspaceRoot();
+    let cur = '';
+    try { cur = fs.readFileSync(ws, 'utf8').trim(); } catch (e) {}
+    if (root && cur !== root) fs.writeFileSync(ws, root + '\n');
   } catch (e) { /* read-only workspace is fine */ }
   return dir;
 }
+
+// ---- conversations -----------------------------------------------------------------------------
+
+function mtime(p) { try { return fs.statSync(p).mtimeMs; } catch (e) { return 0; } }
+
+// When anything on a board last changed: adding or removing a card touches feed/.
+function activity(dir) {
+  return Math.max(mtime(path.join(dir, 'feed')), mtime(path.join(dir, 'state.md')),
+    mtime(path.join(dir, 'tasks.md')), mtime(path.join(dir, 'live')), mtime(path.join(dir, 'meta.json')));
+}
+
+function readMeta(dir) {
+  try { return JSON.parse(fs.readFileSync(path.join(dir, 'meta.json'), 'utf8')) || {}; } catch (e) { return {}; }
+}
+
+function conversations() {
+  const top = canvasDir();
+  if (!top) return [];
+  const out = [{ id: SHARED, title: 'Shared', active: activity(top) }];
+  let ids = [];
+  try { ids = fs.readdirSync(path.join(top, 'sessions')); } catch (e) {}
+  for (const id of ids) {
+    const dir = path.join(top, 'sessions', id);
+    try { if (!fs.statSync(dir).isDirectory()) continue; } catch (e) { continue; }
+    const meta = readMeta(dir);
+    out.push({ id, title: meta.title || `Conversation ${id.slice(0, 8)}`, started: meta.started, active: activity(dir) });
+  }
+  return out;
+}
+
+let lastActive = null;
+function latestId() {
+  const all = conversations();
+  if (lastActive && all.some((c) => c.id === lastActive)) return lastActive;
+  let best = all[0];
+  for (const c of all) if (c.active > best.active) best = c;
+  lastActive = best ? best.id : SHARED;
+  return lastActive;
+}
+
+// Which conversation a board shows: its pinned one if that still exists, else the latest.
+function shownId(b) {
+  if (b.view.mode !== FOLLOW && b.view.id && fs.existsSync(boardDir(b.view.id) || '')) return b.view.id;
+  return latestId();
+}
+
+// ---- rendering ---------------------------------------------------------------------------------
 
 function ago(ms) {
   const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
@@ -54,9 +112,7 @@ function ago(ms) {
   return new Date(ms).toLocaleString();
 }
 
-function readFeed() {
-  const dir = canvasDir();
-  if (!dir) return [];
+function readFeed(dir) {
   const feedDir = path.join(dir, 'feed');
   let names = [];
   try { names = fs.readdirSync(feedDir); } catch (e) { return []; }
@@ -87,29 +143,44 @@ function imgResolver(webview, baseDir) {
   };
 }
 
-function cardHtml(item, webview) {
-  const resolve = imgResolver(webview, path.dirname(item.abs));
-  const head = `<div class="chead"><span class="cname" data-open="${md.escapeHtml(item.abs)}">${md.escapeHtml(item.name)}</span>` +
+// Markdown with widgets resolved; every `src` data file a widget reads is recorded on the board,
+// so the board re-renders when one changes.
+function renderMd(text, b, baseDir) {
+  return md.render(text, imgResolver(b.webview, baseDir), {
+    widget: (body) => widgets.resolve(body, workspaceRoot(), (f) => b.srcs.set(f, mtime(f))),
+  });
+}
+
+function cardHtml(item, b, opts = {}) {
+  const resolve = imgResolver(b.webview, path.dirname(item.abs));
+  const esc = md.escapeHtml;
+  const head = `<div class="chead"><span class="cname" data-open="${esc(item.abs)}">${esc(item.name)}</span>` +
     `<span class="cmeta">${ago(item.mtime)}</span>` +
-    `<button class="x" data-del="${md.escapeHtml(item.abs)}" title="Remove card">×</button></div>`;
+    (opts.expanded ? '' : `<button class="x" data-expand="${esc(item.abs)}" title="Open in a tab">⤢</button>`) +
+    `<button class="x" data-del="${esc(item.abs)}" title="Remove card">×</button></div>`;
+  const scope = ` data-scope="${esc(item.name)}"`;
 
   if (item.kind === 'image') {
     let caption = '';
     const side = item.abs.replace(/\.[^.]+$/, '.caption.md');
-    try { if (fs.existsSync(side)) caption = md.render(fs.readFileSync(side, 'utf8'), resolve); } catch (e) {}
-    return `<div class="card img">${head}<a class="shot" data-open="${md.escapeHtml(item.abs)}">` +
-      `<img src="${resolve(item.abs)}" alt="${md.escapeHtml(item.name)}"></a>` +
+    try { if (fs.existsSync(side)) caption = renderMd(fs.readFileSync(side, 'utf8'), b, path.dirname(item.abs)); } catch (e) {}
+    return `<div class="card img"${scope}>${head}<a class="shot" data-open="${esc(item.abs)}">` +
+      `<img src="${resolve(item.abs)}" alt="${esc(item.name)}"></a>` +
       (caption ? `<div class="cap">${caption}</div>` : '') + `</div>`;
   }
 
   let body = '';
   try {
     const raw = fs.readFileSync(item.abs, 'utf8');
-    body = (item.ext === '.md' || item.ext === '.markdown')
-      ? md.render(raw, resolve)
-      : `<pre class="code"><code>${md.escapeHtml(raw)}</code></pre>`;
-  } catch (e) { body = `<p class="err">Could not read ${md.escapeHtml(item.name)}</p>`; }
-  return `<div class="card">${head}<div class="body">${body}</div></div>`;
+    if (/\.widget\.json$/i.test(item.name)) {
+      body = widgets.resolve(raw, workspaceRoot(), (f) => b.srcs.set(f, mtime(f)));
+    } else if (item.ext === '.md' || item.ext === '.markdown') {
+      body = renderMd(raw, b, path.dirname(item.abs));
+    } else {
+      body = `<pre class="code"><code>${esc(raw)}</code></pre>`;
+    }
+  } catch (e) { body = `<p class="err">Could not read ${esc(item.name)}</p>`; }
+  return `<div class="card"${scope}>${head}<div class="body">${body}</div></div>`;
 }
 
 function taskText(t) {
@@ -121,9 +192,7 @@ function taskText(t) {
   return h;
 }
 
-function tasksHtml() {
-  const file = tasksFile();
-  if (!file) return '<div class="empty">Open a folder to keep tasks.</div>';
+function tasksHtml(file) {
   const items = tasks.parse(tasks.read(file));
   const secs = tasks.sections(items);
   const all = items.filter((i) => i.type === 'task');
@@ -136,7 +205,7 @@ function tasksHtml() {
     const rows = sec.items.map((i) => {
       if (i.type !== 'task') return `<div class="tnote">${taskText(i.text)}</div>`;
       return `<div class="trow ${i.done ? 'done' : ''}" data-task="${i.idx}" style="margin-left:${i.indent * 14}px">` +
-        `<span class="box">${i.done ? '\u2713' : ''}</span><span class="ttext">${taskText(i.text)}</span></div>`;
+        `<span class="box">${i.done ? '✓' : ''}</span><span class="ttext">${taskText(i.text)}</span></div>`;
     }).join('');
     const head = sec.title
       ? `<div class="shead"><span class="stitle">${md.escapeHtml(sec.title)}</span>` +
@@ -152,12 +221,12 @@ function tasksHtml() {
   return `<details class="tasks" id="tasksBlock">
   <summary>
     <span class="tw">Tasks</span>
-    <span class="tsum">${open} open${doneAll ? ` \u00b7 ${doneAll} done` : ''}</span>
+    <span class="tsum">${open} open${doneAll ? ` · ${doneAll} done` : ''}</span>
     <span class="pbar sbar"><span class="pfill" style="width:${pctAll}%"></span></span>
   </summary>
   <div class="tbody">
     ${body || '<div class="empty">No tasks yet.</div>'}
-    <div class="addrow"><input id="newtask" type="text" placeholder="Add a task\u2026" autocomplete="off">
+    <div class="addrow"><input id="newtask" type="text" placeholder="Add a task…" autocomplete="off">
       <button id="cleardone" title="Remove finished tasks">Clear done</button>
       <button id="edittasks" title="Open tasks.md">Edit</button>
     </div>
@@ -169,55 +238,65 @@ function every(s) {
   return s % 3600 === 0 ? `${s / 3600}h` : s % 60 === 0 ? `${s / 60}m` : `${s}s`;
 }
 
-function liveHtml(webview) {
-  const dir = canvasDir();
+function liveHtml(b) {
+  const dir = boardDir(shownId(b));
   if (!dir) return '';
-  return live.list(dir).map((b) => {
-    const m = (runner && runner.meta.get(b.name)) || {};
+  return live.list(dir).map((blk) => {
+    let m = (runner && runner.meta.get(blk.script)) || {};
+    // not run by this window yet: show what the last run (CLI or another window) recorded
+    if (!m.at) {
+      try {
+        const st = JSON.parse(fs.readFileSync(blk.status, 'utf8'));
+        m = Object.assign({}, m, { at: Date.parse(st.at), code: st.exit, err: st.stderr });
+      } catch (e) {}
+    }
     let status;
-    if (!vscode.workspace.isTrusted) status = 'paused \u00b7 workspace not trusted';
-    else if (!cfg().get('liveBlocks', true)) status = 'paused \u00b7 claudeCanvas.liveBlocks is off';
-    else if (m.running && !m.at) status = 'running\u2026';
-    else if (m.at) status = `${new Date(m.at).toLocaleTimeString()} \u00b7 every ${every(b.every)}${m.running ? ' \u00b7 running\u2026' : ''}`;
-    else status = `every ${every(b.every)}`;
+    if (!vscode.workspace.isTrusted) status = 'paused · workspace not trusted';
+    else if (!cfg().get('liveBlocks', true)) status = 'paused · claudeCanvas.liveBlocks is off';
+    else if (m.running && !m.at) status = 'running…';
+    else if (m.at) status = `${new Date(m.at).toLocaleTimeString()} · every ${every(blk.every)}${m.running ? ' · running…' : ''}`;
+    else status = `every ${every(blk.every)}`;
     let body = '';
-    try { if (fs.existsSync(b.out)) body = md.render(fs.readFileSync(b.out, 'utf8'), imgResolver(webview, dir)); } catch (e) {}
+    try { if (fs.existsSync(blk.out)) body = renderMd(fs.readFileSync(blk.out, 'utf8'), b, dir); } catch (e) {}
     const err = m.at && m.code !== 0
       ? `<pre class="code err"><code>exit ${m.code}${m.err ? '\n' + md.escapeHtml(m.err) : ''}</code></pre>` : '';
-    return `<div class="state live"><div class="lhead"><span class="ltitle" data-open="${md.escapeHtml(b.script)}"` +
-      ` title="Open ${md.escapeHtml(path.basename(b.script))}">${md.escapeHtml(b.title)}</span>` +
-      `<span class="cmeta">${md.escapeHtml(status)}</span>` +
-      `<button class="x" data-rerun="${md.escapeHtml(b.name)}" title="Run now">\u21bb</button></div>` +
-      `${body || (err ? '' : '<p class="lwait">waiting for the first run\u2026</p>')}${err}</div>`;
+    return `<div class="state live" data-scope="live:${md.escapeHtml(blk.name)}"><div class="lhead">` +
+      `<span class="ltitle" data-open="${md.escapeHtml(blk.script)}" title="Open ${md.escapeHtml(path.basename(blk.script))}">` +
+      `${md.escapeHtml(blk.title)}</span><span class="cmeta">${md.escapeHtml(status)}</span>` +
+      `<button class="x" data-rerun="${md.escapeHtml(blk.name)}" title="Run now">↻</button></div>` +
+      `${body || (err ? '' : '<p class="lwait">waiting for the first run…</p>')}${err}</div>`;
   }).join('\n');
 }
 
-function buildHtml(webview, extUri) {
-  const dir = canvasDir();
-  const nonce = String(Math.random()).slice(2) + String(Date.now());
-  const csp = `default-src 'none'; img-src ${webview.cspSource} https: data: vscode-resource:; ` +
-    `style-src 'unsafe-inline' ${webview.cspSource}; script-src 'nonce-${nonce}'; font-src ${webview.cspSource};`;
-
-  if (!dir) {
-    return `<!DOCTYPE html><html><head><meta http-equiv="Content-Security-Policy" content="${csp}"></head>
-      <body style="font-family:var(--vscode-font-family);padding:16px">Open a folder to use Claude Canvas.</body></html>`;
+function pickerHtml(b) {
+  const esc = md.escapeHtml;
+  const shown = shownId(b);
+  const all = conversations();
+  const sessions = all.filter((c) => c.id !== SHARED).sort((x, y) => y.active - x.active)
+    .slice(0, cfg().get('maxConversations', 20));
+  if (shown !== SHARED && !sessions.some((c) => c.id === shown)) {
+    const c = all.find((x) => x.id === shown);
+    if (c) sessions.push(c);
   }
+  const shownTitle = (all.find((c) => c.id === shown) || { title: 'Shared' }).title;
+  const opt = (value, label, sel) => `<option value="${esc(value)}"${sel ? ' selected' : ''}>${esc(label)}</option>`;
+  return `<select id="conv" title="Which conversation this board shows">` +
+    opt(FOLLOW, `Follow latest · ${shownTitle}`, b.view.mode === FOLLOW) +
+    opt(SHARED, 'Shared', b.view.mode !== FOLLOW && shown === SHARED) +
+    sessions.map((c) => opt(c.id, `${c.title} · ${ago(c.active)}`, b.view.mode !== FOLLOW && shown === c.id)).join('') +
+    `</select>`;
+}
 
-  let state = '';
-  try {
-    const p = path.join(dir, 'state.md');
-    if (fs.existsSync(p)) state = md.render(fs.readFileSync(p, 'utf8'), imgResolver(webview, dir));
-  } catch (e) {}
-
-  const items = readFeed();
-  const cards = items.map((it) => cardHtml(it, webview)).join('\n');
-  const tasksPane = tasksHtml();
-
+function page(b, content) {
+  const nonce = String(Math.random()).slice(2) + String(Date.now());
+  const csp = `default-src 'none'; img-src ${b.webview.cspSource} https: data: vscode-resource:; ` +
+    `style-src 'unsafe-inline' ${b.webview.cspSource}; script-src 'nonce-${nonce}' ${b.webview.cspSource}; font-src ${b.webview.cspSource};`;
+  const widgetJs = b.webview.asWebviewUri(vscode.Uri.joinPath(b.extUri, 'media', 'widgets.js'));
+  const saved = JSON.stringify({ view: b.view, card: b.card || null }).replace(/</g, '\\u003c');
   return `<!DOCTYPE html><html><head>
 <meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="${csp}">
-<style>
-:root { color-scheme: light dark; }
+<style>:root { color-scheme: light dark; }
 body { margin:0; padding:0 12px 24px; overflow-x:hidden; font-family:var(--vscode-font-family); font-size:var(--vscode-font-size);
   color:var(--vscode-foreground); background:var(--vscode-sideBar-background,var(--vscode-editor-background)); }
 .bar { position:sticky; top:0; z-index:5; display:flex; gap:6px; align-items:center; padding:8px 0;
@@ -313,207 +392,316 @@ img.inline-img { max-width:100%; border-radius:4px; }
 .lwait { opacity:.55; font-size:.9em; }
 .empty { opacity:.6; padding:24px 4px; line-height:1.6; }
 .err { color:var(--vscode-errorForeground); }
-</style></head><body>
-<div class="bar"><span class="t">CLAUDE CANVAS</span>
-  <button id="folder" title="Reveal the canvas folder">Folder</button>
-  <button id="clear" title="Remove every feed card">Clear</button>
-  <button id="refresh" title="Re-read from disk">\u21bb</button>
-</div>
-${tasksPane}
-${state ? `<div class="state">${state}</div>` : ''}
-<div id="live">${liveHtml(webview)}</div>
-${cards || (state ? '' : '<div class="empty">Nothing on the board yet.<br>Claude writes <code>state.md</code> and drops cards into <code>feed/</code>.</div>')}
+/* conversation picker */
+.bar select#conv { flex:1 1 auto; min-width:0; max-width:100%; font:inherit; font-size:.9em; padding:2px 4px; border-radius:5px;
+  color:var(--vscode-dropdown-foreground,var(--vscode-foreground)); background:var(--vscode-dropdown-background,transparent);
+  border:1px solid var(--vscode-dropdown-border,var(--vscode-panel-border,rgba(128,128,128,.3))); }
+.expanded { padding-top:10px; } .expanded .card { margin-top:0; }
+/* widgets: palette from the dataviz reference, validated against VS Code light and dark surfaces */
+.wdg { position:relative; margin:.4em 0 .6em; --wsurf:var(--vscode-editorWidget-background,var(--vscode-editor-background));
+  --s1:#2a78d6; --s2:#eb6834; --s3:#1baf7a; --s4:#eda100; --s5:#e87ba4; --s6:#008300; --s7:#4a3aa7; --s8:#e34948;
+  --smute:#b8b7b0; --wgood:#006300; --wbad:#d03b3b; --wgrid:rgba(128,128,128,.18); --wbase:rgba(128,128,128,.45); }
+body.vscode-dark .wdg, body.vscode-high-contrast:not(.vscode-high-contrast-light) .wdg {
+  --s1:#3987e5; --s2:#d95926; --s3:#199e70; --s4:#c98500; --s5:#d55181; --s6:#008300; --s7:#9085e9; --s8:#e66767;
+  --smute:#5a5955; --wgood:#0ca30c; --wbad:#e66767; }
+.wdg .s1 { --c:var(--s1); } .wdg .s2 { --c:var(--s2); } .wdg .s3 { --c:var(--s3); } .wdg .s4 { --c:var(--s4); }
+.wdg .s5 { --c:var(--s5); } .wdg .s6 { --c:var(--s6); } .wdg .s7 { --c:var(--s7); } .wdg .s8 { --c:var(--s8); }
+.wdg .sm { --c:var(--smute); }
+.wh { display:flex; align-items:flex-start; gap:8px; margin-bottom:4px; }
+.wt { min-width:0; margin-right:auto; }
+.wtitle { font-weight:600; } .wsub { font-size:.85em; opacity:.65; }
+.wbtn { font-size:.8em; padding:1px 7px; flex:none; }
+.wsvg { display:block; overflow:visible; }
+.wplot { position:relative; }
+.wgrid { stroke:var(--wgrid); stroke-width:1; } .wbase { stroke:var(--wbase); stroke-width:1; }
+.wax { fill:var(--vscode-descriptionForeground,currentColor); font-size:11px; font-variant-numeric:tabular-nums; opacity:.85; }
+.wlab { fill:var(--vscode-foreground); font-size:11px; }
+.wline { fill:none; stroke:var(--c); stroke-width:2; stroke-linejoin:round; stroke-linecap:round; }
+.warea { fill:var(--c); opacity:.1; stroke:none; }
+.wdot { fill:var(--c); stroke:var(--wsurf); stroke-width:2; }
+.wring { fill:none; stroke:var(--vscode-foreground); stroke-width:1.5; opacity:.7; pointer-events:none; }
+.wbar { fill:var(--c); outline:none; transition:opacity .1s; } .wbar.dim { opacity:.35; }
+.wbar:focus-visible, .wcell:focus-visible, .whit:focus-visible { outline:1px solid var(--vscode-focusBorder); }
+.wcell { outline:none; } .wcell.on { stroke:var(--vscode-foreground); stroke-width:1.5; }
+.wcellt { font-size:10px; fill:#0b0b0b; pointer-events:none; } .wcellt.inv { fill:#fff; }
+.wcross { stroke:var(--vscode-foreground); stroke-width:1; opacity:.35; pointer-events:none; }
+.whit { fill:transparent; outline:none; cursor:crosshair; }
+.wkey { flex:none; overflow:visible; } .wkey .ln { stroke:var(--c); stroke-width:2; stroke-linecap:round; } .wkey .fl { fill:var(--c); }
+.wlg { display:flex; flex-wrap:wrap; gap:4px 12px; margin:2px 0 6px; font-size:.85em; }
+.wlgi { display:inline-flex; align-items:center; gap:5px; border:none; background:none; padding:1px 2px; cursor:pointer; }
+.wlgi:hover { background:var(--vscode-toolbar-hoverBackground,rgba(128,128,128,.18)); }
+.wlgi.off { opacity:.4; } .wlgi.off span { text-decoration:line-through; }
+.wtip { position:absolute; z-index:4; pointer-events:none; min-width:90px; max-width:260px; padding:6px 8px; border-radius:6px;
+  font-size:.85em; background:var(--vscode-editorHoverWidget-background,var(--vscode-editorWidget-background));
+  color:var(--vscode-editorHoverWidget-foreground,var(--vscode-foreground));
+  border:1px solid var(--vscode-editorHoverWidget-border,rgba(128,128,128,.35)); box-shadow:0 2px 8px rgba(0,0,0,.18); }
+.wtiph { opacity:.7; margin-bottom:3px; } .wtipr { display:flex; align-items:center; gap:6px; line-height:1.5; white-space:nowrap; }
+.wtipr strong { font-variant-numeric:tabular-nums; } .wtipn { opacity:.7; overflow:hidden; text-overflow:ellipsis; }
+.wnote { font-size:.8em; opacity:.6; margin-top:3px; }
+.wtbl .wscroll { max-height:340px; overflow:auto; }
+.wtbl table { table-layout:auto; } .wtbl th { cursor:pointer; user-select:none; white-space:nowrap; position:sticky; top:0; }
+.wtbl th, .wtbl td { padding:2px 7px; } .wtbl .num { text-align:right; font-variant-numeric:tabular-nums; }
+.wfilter { width:100%; box-sizing:border-box; font:inherit; font-size:.9em; margin:2px 0 5px; padding:3px 7px; border-radius:5px;
+  color:var(--vscode-input-foreground); background:var(--vscode-input-background);
+  border:1px solid var(--vscode-input-border,var(--vscode-panel-border,rgba(128,128,128,.35))); }
+.wramp { display:flex; align-items:center; gap:2px; font-size:.8em; opacity:.8; margin-top:4px; }
+.wramp span:first-child { margin-right:4px; } .wramp span:last-child { margin-left:4px; }
+.wsw { width:16px; height:8px; border-radius:2px; }
+.wstats { display:flex; flex-wrap:wrap; gap:10px; }
+.wstat { flex:1 1 120px; min-width:0; padding:8px 10px; border-radius:6px; border:1px solid var(--vscode-panel-border,rgba(128,128,128,.25)); }
+.wsl { font-size:.85em; opacity:.7; } .wsv { font-size:1.6em; font-weight:600; line-height:1.2; margin:2px 0; }
+.wsd { font-size:.85em; } .wsd.good { color:var(--wgood); } .wsd.bad { color:var(--wbad); } .wsvs { opacity:.6; color:var(--vscode-foreground); }
+.wspark { display:block; margin-top:4px; overflow:visible; }
+.wdg-err { border-left:3px solid var(--vscode-errorForeground); padding:4px 8px; font-size:.9em; }
+.wdg-err strong { color:var(--vscode-errorForeground); }</style></head><body>
+${content}
+<script nonce="${nonce}" src="${widgetJs}"></script>
 <script nonce="${nonce}">
 const vs = acquireVsCodeApi();
+// merge, never replace: several things keep state here (scroll, tasks toggle, widgets, drafts)
+const put = (k, v) => vs.setState(Object.assign({}, vs.getState() || {}, { [k]: v }));
 const st = vs.getState() || {};
+put('board', ${saved});          // what a restored tab reopens with
 const block = document.getElementById('tasksBlock');
 if (block) {
   block.open = st.tasksOpen !== false;
-  block.addEventListener('toggle', () => vs.setState(Object.assign({}, vs.getState(), { tasksOpen: block.open })));
+  block.addEventListener('toggle', () => put('tasksOpen', block.open));
 }
-document.getElementById('refresh').onclick = () => vs.postMessage({ type: 'refresh' });
-document.getElementById('folder').onclick = () => vs.postMessage({ type: 'folder' });
-document.getElementById('clear').onclick = () => vs.postMessage({ type: 'clear' });
-const cd = document.getElementById('cleardone');
-if (cd) cd.onclick = () => vs.postMessage({ type: 'task', action: 'clearDone' });
-const et = document.getElementById('edittasks');
-if (et) et.onclick = () => vs.postMessage({ type: 'task', action: 'edit' });
+const on = (id, f) => { const e = document.getElementById(id); if (e) e.onclick = f; };
+on('refresh', () => vs.postMessage({ type: 'refresh' }));
+on('clear', () => vs.postMessage({ type: 'clear' }));
+on('tab', () => vs.postMessage({ type: 'tab' }));
+on('cleardone', () => vs.postMessage({ type: 'task', action: 'clearDone' }));
+on('edittasks', () => vs.postMessage({ type: 'task', action: 'edit' }));
+const conv = document.getElementById('conv');
+if (conv) conv.onchange = () => vs.postMessage({ type: 'view', value: conv.value });
+// a half-typed task survives any re-render of the board
 const nt = document.getElementById('newtask');
-if (nt) nt.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && nt.value.trim()) { vs.postMessage({ type: 'task', action: 'add', text: nt.value.trim() }); nt.value = ''; }
-});
+if (nt) {
+  if (st.draft) nt.value = st.draft;
+  if (st.draftFocus) { nt.focus(); const c = Math.min(st.draftCaret ?? nt.value.length, nt.value.length); nt.setSelectionRange(c, c); }
+  const keep = () => vs.setState(Object.assign({}, vs.getState() || {}, { draft: nt.value, draftFocus: document.activeElement === nt, draftCaret: nt.selectionStart }));
+  nt.addEventListener('input', keep); nt.addEventListener('focus', keep); nt.addEventListener('blur', keep);
+  nt.addEventListener('keyup', keep);
+  nt.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && nt.value.trim()) {
+      vs.postMessage({ type: 'task', action: 'add', text: nt.value.trim() });
+      nt.value = ''; keep();
+    }
+  });
+}
 document.addEventListener('click', (e) => {
   const row = e.target.closest('[data-task]');
   if (row) { row.classList.toggle('done'); vs.postMessage({ type: 'task', action: 'toggle', idx: +row.dataset.task }); return; }
   const rr = e.target.closest('[data-rerun]');
   if (rr) { vs.postMessage({ type: 'rerun', name: rr.dataset.rerun }); return; }
+  const ex = e.target.closest('[data-expand]');
+  if (ex) { vs.postMessage({ type: 'expand', path: ex.dataset.expand }); return; }
   const del = e.target.closest('[data-del]');
   if (del) { vs.postMessage({ type: 'delete', path: del.dataset.del }); return; }
   const open = e.target.closest('[data-open]');
   if (open) vs.postMessage({ type: 'open', path: open.dataset.open });
 });
+const store = {
+  get: (k) => ((vs.getState() || {}).widgets || {})[k] || {},
+  set: (k, v) => { const w = Object.assign({}, (vs.getState() || {}).widgets || {}); w[k] = v; put('widgets', w); },
+};
+if (window.CanvasWidgets) CanvasWidgets.mount(document, store);
 // live blocks are swapped in place, so a refresh never clobbers a half-typed task
 window.addEventListener('message', (e) => {
   const lv = document.getElementById('live');
-  if (e.data && e.data.type === 'live' && lv) lv.innerHTML = e.data.html;
+  if (e.data && e.data.type === 'live' && lv) {
+    lv.innerHTML = e.data.html;
+    if (window.CanvasWidgets) CanvasWidgets.mount(lv, store);
+  }
 });
-const y = (vs.getState() || {}).scroll || 0;
-window.scrollTo(0, y);
-window.addEventListener('scroll', () => vs.setState({ scroll: window.scrollY }));
+window.scrollTo(0, st.scroll || 0);
+window.addEventListener('scroll', () => put('scroll', window.scrollY));
 </script></body></html>`;
 }
 
-function wire(webview, extUri, ctx) {
-  webview.options = {
-    enableScripts: true,
-    localResourceRoots: [extUri, vscode.Uri.file('/')],
+function buildHtml(b) {
+  b.srcs = new Map();
+  if (!canvasDir()) return page(b, '<div class="empty">Open a folder to use Claude Canvas.</div>');
+
+  // a single card, opened in its own tab
+  if (b.card) {
+    let st = null;
+    try { st = fs.statSync(b.card); } catch (e) {}
+    if (!st) return page(b, `<div class="empty">This card was removed.<br><code>${md.escapeHtml(b.card)}</code></div>`);
+    const ext = path.extname(b.card).toLowerCase();
+    const item = { abs: b.card, name: path.basename(b.card), ext, mtime: st.mtimeMs, kind: IMG_EXT.has(ext) ? 'image' : 'text' };
+    return page(b, `<div class="expanded">${cardHtml(item, b, { expanded: true })}</div>`);
+  }
+
+  const id = shownId(b);
+  const dir = boardDir(id);
+  let state = '';
+  try {
+    const p = path.join(dir, 'state.md');
+    if (fs.existsSync(p)) state = renderMd(fs.readFileSync(p, 'utf8'), b, dir);
+  } catch (e) {}
+  const cards = readFeed(dir).map((it) => cardHtml(it, b)).join('\n');
+  const liveBlocks = liveHtml(b);
+  const bar = `<div class="bar">${pickerHtml(b)}
+  ${b.kind === 'view' ? '<button id="tab" title="Open this conversation in an editor tab">⧉</button>' : ''}
+  <button id="clear" title="Remove every card from this board">Clear</button>
+  <button id="refresh" title="Re-read from disk">↻</button>
+</div>`;
+  const empty = !state && !cards && !liveBlocks
+    ? '<div class="empty">Nothing on this board yet.<br>Claude writes <code>state.md</code> and drops cards into <code>feed/</code>.</div>' : '';
+  return page(b, `${bar}
+${tasksHtml(path.join(dir, 'tasks.md'))}
+${state ? `<div class="state" data-scope="state">${state}</div>` : ''}
+<div id="live">${liveBlocks}</div>
+${cards}${empty}`);
+}
+
+// ---- activation --------------------------------------------------------------------------------
+
+function activate(ctx) {
+  ensureDirs();
+  const boards = new Set();
+  let timer = null;
+  let sidebar = null;
+
+  const render = (b) => {
+    b.webview.html = buildHtml(b);
+    if (b.kind !== 'view' && b.host) {
+      const title = b.card ? path.basename(b.card)
+        : (conversations().find((c) => c.id === shownId(b)) || { title: 'Shared' }).title;
+      b.host.title = `Canvas · ${title}`;
+    }
   };
-  webview.html = buildHtml(webview, extUri);
-  return webview.onDidReceiveMessage(async (m) => {
-    if (m.type === 'refresh') webview.html = buildHtml(webview, extUri);
-    else if (m.type === 'open') {
+  const visible = (b) => b.host.visible !== false;
+
+  const reveal = () => {
+    if (sidebar) { try { sidebar.host.show(true); return; } catch (e) {} }
+    vscode.commands.executeCommand('claudeCanvas.board.focus');
+  };
+
+  // `.open` sentinel: anything that can write a file can bring the board up. It may hold a session
+  // id, which a following board switches to.
+  const consumeSentinel = () => {
+    const dir = canvasDir();
+    if (!dir) return false;
+    const flag = path.join(dir, '.open');
+    if (!fs.existsSync(flag)) return false;
+    let id = '';
+    try { id = fs.readFileSync(flag, 'utf8').trim(); } catch (e) {}
+    try { fs.unlinkSync(flag); } catch (e) {}
+    if (id && /^[\w-]+$/.test(id) && fs.existsSync(boardDir(id) || '')) lastActive = id;
+    reveal();
+    return true;
+  };
+
+  const badge = () => {
+    if (!sidebar) return;
+    const open = tasks.openCount(tasks.parse(tasks.read(path.join(boardDir(shownId(sidebar)), 'tasks.md'))));
+    try { sidebar.host.badge = open ? { value: open, tooltip: `${open} open task${open === 1 ? '' : 's'}` } : undefined; } catch (e) {}
+  };
+  const refresh = () => {
+    for (const b of boards) if (visible(b)) render(b);
+    badge();
+  };
+  let newCardIn = null;
+  const schedule = (id, isNewCard) => {
+    if (isNewCard) newCardIn = id;
+    clearTimeout(timer);
+    timer = setTimeout(() => {
+      const opened = consumeSentinel();
+      refresh();
+      if (!opened && newCardIn && sidebar && shownId(sidebar) === newCardIn &&
+        cfg().get('autoReveal', 'always') === 'always') reveal();
+      newCardIn = null;
+    }, 150);
+  };
+
+  const pushLive = (script) => {
+    for (const b of boards) {
+      if (b.card || !visible(b)) continue;
+      const dir = boardDir(shownId(b));
+      if (script && !script.startsWith(dir + path.sep)) continue;
+      b.webview.postMessage({ type: 'live', html: liveHtml(b) });
+    }
+  };
+  // Live blocks run for the boards someone can see, and only those.
+  const shownDirs = () => [...boards].filter((b) => !b.card && visible(b)).map((b) => boardDir(shownId(b))).filter(Boolean);
+  runner = live.createRunner(shownDirs, workspaceRoot, pushLive);
+  const tickLive = (force) => { if (liveAllowed()) runner.tick(force); };
+  // Every 5 s: run due live blocks, and re-render any board whose widget data files changed.
+  const ticker = setInterval(() => {
+    tickLive(false);
+    for (const b of boards) {
+      if (!visible(b) || !b.srcs) continue;
+      for (const [f, t] of b.srcs) if (mtime(f) !== t) { render(b); break; }
+    }
+  }, live.MIN_EVERY * 1000);
+  ctx.subscriptions.push({ dispose: () => { clearInterval(ticker); runner.dispose(); } });
+  ctx.subscriptions.push(vscode.workspace.onDidGrantWorkspaceTrust(() => { refresh(); tickLive(true); }));
+
+  const openTab = (view, card) => {
+    const panel = vscode.window.createWebviewPanel('claudeCanvas.panel', 'Claude Canvas',
+      vscode.ViewColumn.Beside, { enableScripts: true, retainContextWhenHidden: true });
+    adopt(panel, 'tab', view, card);
+  };
+
+  // Hook up a sidebar view or an editor tab. Each board keeps its own conversation choice.
+  function adopt(host, kind, view, card) {
+    const b = { host, kind, webview: host.webview, view, card: card || null, extUri: ctx.extensionUri, srcs: new Map() };
+    host.webview.options = { enableScripts: true, localResourceRoots: [ctx.extensionUri, vscode.Uri.file('/')] };
+    if (kind !== 'view') host.iconPath = vscode.Uri.joinPath(ctx.extensionUri, 'media', 'canvas.svg');
+    boards.add(b);
+    if (kind === 'view') sidebar = b;
+    host.webview.onDidReceiveMessage((m) => onMessage(b, m), null, ctx.subscriptions);
+    const vis = kind === 'view' ? host.onDidChangeVisibility : host.onDidChangeViewState;
+    vis(() => { if (visible(b)) { render(b); tickLive(false); } }, null, ctx.subscriptions);
+    host.onDidDispose(() => { boards.delete(b); if (sidebar === b) sidebar = null; }, null, ctx.subscriptions);
+    render(b);
+    badge();
+    setTimeout(() => tickLive(false), 0);
+    return b;
+  }
+
+  async function onMessage(b, m) {
+    const dir = () => boardDir(shownId(b));
+    if (m.type === 'refresh') render(b);
+    else if (m.type === 'view') {
+      b.view = m.value === FOLLOW ? { mode: FOLLOW } : { mode: 'pinned', id: String(m.value) };
+      if (b.kind === 'view') ctx.workspaceState.update('claudeCanvas.view', b.view);
+      render(b); badge(); tickLive(false);
+    } else if (m.type === 'tab') {
+      openTab({ mode: 'pinned', id: shownId(b) });
+    } else if (m.type === 'expand') {
+      if (m.path) openTab({ mode: FOLLOW }, m.path);
+    } else if (m.type === 'open') {
       const uri = vscode.Uri.file(m.path);
       if (IMG_EXT.has(path.extname(m.path).toLowerCase())) {
         await vscode.commands.executeCommand('vscode.open', uri, { preview: true, viewColumn: vscode.ViewColumn.Active });
       } else {
         await vscode.window.showTextDocument(uri, { preview: true });
       }
-    } else if (m.type === 'folder') {
-      const dir = ensureDirs();
-      if (dir) await vscode.commands.executeCommand('revealFileInOS', vscode.Uri.file(dir));
     } else if (m.type === 'delete') {
       try { fs.unlinkSync(m.path); } catch (e) {}
       try { fs.unlinkSync(m.path.replace(/\.[^.]+$/, '.caption.md')); } catch (e) {}
-      webview.html = buildHtml(webview, extUri);
+      refresh();
     } else if (m.type === 'rerun') {
-      if (runner && liveAllowed()) { runner.invalidate(m.name); runner.tick(false); }
+      if (runner && liveAllowed()) { runner.invalidate(path.join(dir(), 'live', m.name + '.sh')); tickLive(false); }
     } else if (m.type === 'clear') {
-      await vscode.commands.executeCommand('claudeCanvas.clearFeed');
+      await clearFeed(dir());
     } else if (m.type === 'task') {
-      const file = tasksFile();
-      if (!file) return;
+      const file = path.join(dir(), 'tasks.md');
       if (m.action === 'toggle') tasks.toggle(file, m.idx);
       else if (m.action === 'add' && m.text) tasks.add(file, m.text);
       else if (m.action === 'clearDone') tasks.clearDone(file);
       else if (m.action === 'edit') { await vscode.window.showTextDocument(vscode.Uri.file(file)); return; }
-      webview.html = buildHtml(webview, extUri);
-    }
-  }, null, ctx.subscriptions);
-}
-
-function activate(ctx) {
-  ensureDirs();
-  const boards = new Set();
-  let timer = null;
-
-  const reveal = () => {
-    let shown = false;
-    for (const b of boards) {
-      try { if (typeof b.show === 'function') { b.show(true); shown = true; } } catch (e) {}
-      try { if (typeof b.reveal === 'function') { b.reveal(undefined, false); shown = true; } } catch (e) {}
-    }
-    if (!shown) vscode.commands.executeCommand('claudeCanvas.board.focus');
-  };
-
-  // `.open` sentinel: anything that can write a file can bring the board up.
-  const consumeSentinel = () => {
-    const dir = canvasDir();
-    if (!dir) return false;
-    const flag = path.join(dir, '.open');
-    if (!fs.existsSync(flag)) return false;
-    try { fs.unlinkSync(flag); } catch (e) {}
-    reveal();
-    return true;
-  };
-
-  const refresh = () => {
-    const tf = tasksFile();
-    const open = tf ? tasks.openCount(tasks.parse(tasks.read(tf))) : 0;
-    for (const b of boards) {
-      if (b.visible !== false) b.webview.html = buildHtml(b.webview, ctx.extensionUri);
-      try {
-        if (b.badge !== undefined || b.viewType === 'claudeCanvas.board') {
-          b.badge = open ? { value: open, tooltip: `${open} open task${open === 1 ? '' : 's'}` } : undefined;
-        }
-      } catch (e) { /* badge unsupported */ }
-    }
-  };
-  const schedule = (isNewCard) => {
-    clearTimeout(timer);
-    timer = setTimeout(() => {
-      const opened = consumeSentinel();
       refresh();
-      if (!opened && isNewCard && cfg().get('autoReveal', 'always') === 'always') reveal();
-    }, 150);
-  };
-
-  const pushLive = () => {
-    for (const b of boards) {
-      if (b.visible !== false) b.webview.postMessage({ type: 'live', html: liveHtml(b.webview) });
     }
-  };
-  runner = live.createRunner(canvasDir, workspaceRoot, pushLive);
-  // Only spend cycles on live blocks while someone can see them.
-  const anyVisible = () => [...boards].some((b) => b.visible !== false);
-  const tickLive = (force) => { if (liveAllowed() && anyVisible()) runner.tick(force); };
-  const ticker = setInterval(() => tickLive(false), live.MIN_EVERY * 1000);
-  ctx.subscriptions.push({ dispose: () => { clearInterval(ticker); runner.dispose(); } });
-  ctx.subscriptions.push(vscode.workspace.onDidGrantWorkspaceTrust(() => { refresh(); tickLive(true); }));
+  }
 
-  const provider = {
-    resolveWebviewView(view) {
-      view.webview.options = { enableScripts: true, localResourceRoots: [ctx.extensionUri, vscode.Uri.file('/')] };
-      boards.add(view);
-      wire(view.webview, ctx.extensionUri, ctx);
-      view.onDidChangeVisibility(() => {
-        if (view.visible) { view.webview.html = buildHtml(view.webview, ctx.extensionUri); tickLive(false); }
-      });
-      view.onDidDispose(() => boards.delete(view));
-      setTimeout(() => { refresh(); tickLive(false); }, 0);
-    },
-  };
-  ctx.subscriptions.push(vscode.window.registerWebviewViewProvider('claudeCanvas.board', provider,
-    { webviewOptions: { retainContextWhenHidden: true } }));
-
-  ctx.subscriptions.push(vscode.commands.registerCommand('claudeCanvas.focus', () => reveal()));
-
-  ctx.subscriptions.push(vscode.commands.registerCommand('claudeCanvas.openPanel', () => {
-    const panel = vscode.window.createWebviewPanel('claudeCanvas.panel', 'Claude Canvas',
-      vscode.ViewColumn.Beside, { enableScripts: true, retainContextWhenHidden: true });
-    panel.iconPath = vscode.Uri.joinPath(ctx.extensionUri, 'media', 'canvas.svg');
-    boards.add(panel);
-    wire(panel.webview, ctx.extensionUri, ctx);
-    panel.onDidDispose(() => boards.delete(panel));
-  }));
-
-  ctx.subscriptions.push(vscode.commands.registerCommand('claudeCanvas.openTasks', async () => {
-    ensureDirs();
-    const file = tasksFile();
-    if (file) await vscode.window.showTextDocument(vscode.Uri.file(file));
-  }));
-
-  ctx.subscriptions.push(vscode.commands.registerCommand('claudeCanvas.newSession', async () => {
-    ensureDirs();
-    const file = tasksFile();
-    if (!file) return;
-    const title = await vscode.window.showInputBox({
-      prompt: 'Title for the new task session',
-      value: new Date().toISOString().slice(0, 10) + ' \u2014 ',
-    });
-    if (!title) return;
-    tasks.newSession(file, title.trim());
-    refresh();
-  }));
-
-  ctx.subscriptions.push(vscode.commands.registerCommand('claudeCanvas.revealFolder', async () => {
-    const dir = ensureDirs();
-    if (dir) await vscode.commands.executeCommand('revealInExplorer', vscode.Uri.file(dir));
-  }));
-
-  ctx.subscriptions.push(vscode.commands.registerCommand('claudeCanvas.clearFeed', async () => {
-    const dir = canvasDir();
+  async function clearFeed(dir) {
     if (!dir) return;
-    const pick = await vscode.window.showWarningMessage('Remove every card from the Claude Canvas feed?',
+    const pick = await vscode.window.showWarningMessage('Remove every card from this Claude Canvas board?',
       { modal: true }, 'Clear feed');
     if (pick !== 'Clear feed') return;
     const feedDir = path.join(dir, 'feed');
@@ -521,35 +709,84 @@ function activate(ctx) {
       for (const n of fs.readdirSync(feedDir)) { try { fs.unlinkSync(path.join(feedDir, n)); } catch (e) {} }
     } catch (e) {}
     refresh();
+  }
+
+  ctx.subscriptions.push(vscode.window.registerWebviewViewProvider('claudeCanvas.board', {
+    resolveWebviewView(view) {
+      adopt(view, 'view', ctx.workspaceState.get('claudeCanvas.view') || { mode: FOLLOW });
+    },
+  }, { webviewOptions: { retainContextWhenHidden: true } }));
+
+  // Tabs come back after a window reload, showing what they showed before.
+  ctx.subscriptions.push(vscode.window.registerWebviewPanelSerializer('claudeCanvas.panel', {
+    async deserializeWebviewPanel(panel, state) {
+      const saved = (state && state.board) || {};
+      adopt(panel, 'tab', saved.view || { mode: FOLLOW }, saved.card || null);
+    },
   }));
 
+  ctx.subscriptions.push(vscode.commands.registerCommand('claudeCanvas.focus', () => reveal()));
+  ctx.subscriptions.push(vscode.commands.registerCommand('claudeCanvas.openPanel', () => {
+    openTab(sidebar ? { mode: 'pinned', id: shownId(sidebar) } : { mode: FOLLOW });
+  }));
+  ctx.subscriptions.push(vscode.commands.registerCommand('claudeCanvas.openTasks', async () => {
+    ensureDirs();
+    const d = boardDir(sidebar ? shownId(sidebar) : latestId());
+    if (d) await vscode.window.showTextDocument(vscode.Uri.file(path.join(d, 'tasks.md')));
+  }));
+  ctx.subscriptions.push(vscode.commands.registerCommand('claudeCanvas.newSession', async () => {
+    ensureDirs();
+    const d = boardDir(sidebar ? shownId(sidebar) : latestId());
+    if (!d) return;
+    const title = await vscode.window.showInputBox({
+      prompt: 'Title for the new task session',
+      value: new Date().toISOString().slice(0, 10) + ' — ',
+    });
+    if (!title) return;
+    tasks.newSession(path.join(d, 'tasks.md'), title.trim());
+    refresh();
+  }));
+  ctx.subscriptions.push(vscode.commands.registerCommand('claudeCanvas.revealFolder', async () => {
+    const d = ensureDirs();
+    if (d) await vscode.commands.executeCommand('revealInExplorer', vscode.Uri.file(d));
+  }));
+  ctx.subscriptions.push(vscode.commands.registerCommand('claudeCanvas.clearFeed', async () => {
+    await clearFeed(boardDir(sidebar ? shownId(sidebar) : latestId()));
+  }));
+
+  // One watcher over the whole canvas folder. Paths are relative to it: `feed/x.png` is the
+  // Shared board, `sessions/<id>/feed/x.png` a conversation's.
+  const onFs = (relRaw) => {
+    const rel = String(relRaw || '').split(path.sep).join('/');
+    if (!rel || rel === '.open') { schedule(null, false); return; }
+    if (rel === '.workspace' || rel === '.gitignore') return;
+    let id = SHARED, rest = rel;
+    if (rel.startsWith('sessions/')) {
+      const parts = rel.split('/');
+      if (parts.length < 3) return;          // the session dir itself; its files follow
+      id = parts[1]; rest = parts.slice(2).join('/');
+    }
+    if (rest.startsWith('live') && !rest.endsWith('.sh')) return;   // runner output, pushed in place
+    lastActive = id;
+    if (rest.startsWith('live')) {
+      runner.invalidate(path.join(boardDir(id), rest));
+      schedule(id, false);
+      setTimeout(() => tickLive(false), 200);
+      return;
+    }
+    schedule(id, rest.startsWith('feed'));
+  };
   const dir = canvasDir();
   if (dir) {
     try {
-      const w = fs.watch(dir, { recursive: true }, (_ev, name) => {
-        const n = String(name || '');
-        if (n.startsWith('live') && !n.endsWith('.sh')) return; // runner output, pushed in place
-        if (n.startsWith('live')) {
-          runner.invalidate(path.basename(n, '.sh'));
-          schedule(false);
-          setTimeout(() => tickLive(false), 200);
-          return;
-        }
-        schedule(n.startsWith('feed'));
-      });
+      const w = fs.watch(dir, { recursive: true }, (_ev, name) => onFs(name));
       ctx.subscriptions.push({ dispose: () => w.close() });
     } catch (e) {
-      const fsw = vscode.workspace.createFileSystemWatcher(
-        new vscode.RelativePattern(vscode.Uri.file(dir), '**/*'));
-      const isLive = (u) => path.relative(dir, u.fsPath).startsWith('live');
-      const isOutput = (u) => isLive(u) && !u.fsPath.endsWith('.sh');
-      fsw.onDidChange((u) => {
-        if (isOutput(u)) return;
-        schedule(false);
-        if (isLive(u)) { runner.invalidate(path.basename(u.fsPath, '.sh')); tickLive(false); }
-      });
-      fsw.onDidCreate((u) => { if (!isOutput(u)) schedule(!isLive(u)); if (isLive(u)) tickLive(false); });
-      fsw.onDidDelete((u) => { if (!isOutput(u)) schedule(false); });
+      const fsw = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(vscode.Uri.file(dir), '**/*'));
+      const rel = (u) => path.relative(dir, u.fsPath);
+      fsw.onDidChange((u) => onFs(rel(u)));
+      fsw.onDidCreate((u) => onFs(rel(u)));
+      fsw.onDidDelete((u) => onFs(rel(u)));
       ctx.subscriptions.push(fsw);
     }
   }

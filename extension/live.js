@@ -1,6 +1,7 @@
 'use strict';
 // Live blocks: `live/<name>.sh` prints markdown, and is re-run on a timer. Its last good output is
-// kept in `live/<name>.md`, so Claude (or anything else) can read what the board is showing.
+// kept in `live/<name>.md` and every run's result in `live/<name>.status.json`, so Claude (or
+// anything else) can read what the board is showing and whether the last run failed.
 //
 // Header comments in the first lines of the script configure it:
 //   # every: 60s        (s, m or h; at least 5s)
@@ -24,6 +25,14 @@ function killTree(child) {
   try { process.kill(-child.pid, 'SIGKILL'); } catch (e) { try { child.kill('SIGKILL'); } catch (e2) {} }
 }
 
+function writeStatus(b, m) {
+  const st = { exit: m.code, stderr: m.err || '', at: new Date(m.at).toISOString(), ms: m.ms };
+  try {
+    fs.writeFileSync(b.status + '.tmp', JSON.stringify(st, null, 2) + '\n');
+    fs.renameSync(b.status + '.tmp', b.status);
+  } catch (e) { /* read-only board: the panel still shows the error */ }
+}
+
 function header(src) {
   const h = {};
   for (const l of src.split('\n').slice(0, 15)) {
@@ -44,22 +53,25 @@ function list(dir) {
     const script = path.join(liveDir, n);
     let h = {};
     try { h = header(fs.readFileSync(script, 'utf8')); } catch (e) { continue; }
-    out.push({ name, script, out: path.join(liveDir, name + '.md'), every: parseEvery(h.every), title: h.title || name });
+    out.push({
+      name, script, out: path.join(liveDir, name + '.md'), status: path.join(liveDir, name + '.status.json'),
+      every: parseEvery(h.every), title: h.title || name,
+    });
   }
   return out;
 }
 
-// Runs due blocks. `cwd()` is where scripts run (the workspace root), `onUpdate(name)` fires when
-// a run finishes. Output is written before onUpdate, errors are kept in `meta` and never
-// overwrite the last good output.
-function createRunner(getDir, cwd, onUpdate) {
-  const meta = new Map(); // name -> { at, ms, code, err, running }
+// Runs due blocks for every board dir `getDirs()` returns (the boards someone can see). `cwd()` is
+// where scripts run (the workspace root); `onUpdate(script)` fires when a run finishes. Output is
+// written before onUpdate; errors go to `meta` and the status file, never over the last output.
+function createRunner(getDirs, cwd, onUpdate) {
+  const meta = new Map(); // script path -> { at, ms, code, err, running }
   const kids = new Set();
 
   function run(b) {
-    const m = meta.get(b.name) || {};
+    const m = meta.get(b.script) || {};
     m.running = true;
-    meta.set(b.name, m);
+    meta.set(b.script, m);
     const t0 = Date.now();
     let out = '', err = '';
     let child;
@@ -68,7 +80,8 @@ function createRunner(getDir, cwd, onUpdate) {
       child = spawn('bash', [b.script], { cwd: cwd(), stdio: ['ignore', 'pipe', 'pipe'], detached: true });
     } catch (e) {
       Object.assign(m, { running: false, at: t0, ms: 0, code: -1, err: String(e) });
-      onUpdate(b.name);
+      writeStatus(b, m);
+      onUpdate(b.script);
       return;
     }
     kids.add(child);
@@ -86,25 +99,26 @@ function createRunner(getDir, cwd, onUpdate) {
           fs.renameSync(b.out + '.tmp', b.out);
         } catch (e) { m.err = `could not write ${path.basename(b.out)}: ${e.message}`; }
       }
-      onUpdate(b.name);
+      writeStatus(b, m);
+      onUpdate(b.script);
     });
   }
 
   // Run every block whose interval has elapsed. `force` runs them all now.
   function tick(force) {
-    const dir = getDir();
-    if (!dir) return;
     const now = Date.now();
-    for (const b of list(dir)) {
-      const m = meta.get(b.name);
-      if (m && m.running) continue;
-      if (force || !m || !m.at || now - m.at >= b.every * 1000) run(b);
+    for (const dir of new Set(getDirs())) {
+      for (const b of list(dir)) {
+        const m = meta.get(b.script);
+        if (m && m.running) continue;
+        if (force || !m || !m.at || now - m.at >= b.every * 1000) run(b);
+      }
     }
   }
 
   // Make one block due now (its script changed, or someone pressed re-run).
-  function invalidate(name) {
-    const m = meta.get(name);
+  function invalidate(script) {
+    const m = meta.get(script);
     if (m) m.at = 0;
   }
 

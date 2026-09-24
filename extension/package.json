@@ -1,8 +1,8 @@
 {
   "name": "claude-canvas",
   "displayName": "Claude Canvas",
-  "description": "A live board Claude Code can write to: current work state, live command output, notes and images.",
-  "version": "0.5.0",
+  "description": "A live board Claude Code can write to: one per conversation, with interactive widgets, live command output, notes and images.",
+  "version": "0.6.0",
   "publisher": "local",
   "license": "MIT",
   "engines": {
@@ -16,7 +16,8 @@
   ],
   "main": "./extension.js",
   "activationEvents": [
-    "onStartupFinished"
+    "onStartupFinished",
+    "onWebviewPanel:claudeCanvas.panel"
   ],
   "capabilities": {
     "untrustedWorkspaces": {
@@ -50,7 +51,7 @@
       },
       {
         "command": "claudeCanvas.openPanel",
-        "title": "Claude Canvas: Open Board in Editor Tab"
+        "title": "Claude Canvas: Open Conversation in Editor Tab"
       },
       {
         "command": "claudeCanvas.clearFeed",
@@ -75,7 +76,7 @@
         "claudeCanvas.folder": {
           "type": "string",
           "default": ".claude/canvas",
-          "description": "Canvas folder, relative to the workspace root. Holds state.md and feed/."
+          "description": "Canvas folder, relative to the workspace root. Its top level is the Shared board; each conversation has one under sessions/<id>/."
         },
         "claudeCanvas.newestFirst": {
           "type": "boolean",
@@ -100,6 +101,11 @@
           "type": "boolean",
           "default": true,
           "description": "Re-run the scripts in live/ on their interval while the board is visible (trusted workspaces only)."
+        },
+        "claudeCanvas.maxConversations": {
+          "type": "number",
+          "default": 20,
+          "description": "Conversations listed in the board's picker, most recently active first."
         }
       }
     }
