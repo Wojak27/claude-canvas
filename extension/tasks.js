@@ -53,7 +53,7 @@ function sections(items) {
       if (it.level < top) continue;            // document title, not a section
       if (it.level > top) { cur.items.push({ type: 'text', text: it.text, line: it.line }); continue; }
       if (cur.items.length || cur.title) secs.push(cur);
-      cur = { title: it.text, level: it.level, items: [] };
+      cur = { title: it.text, level: it.level, line: it.line, items: [] };
     } else {
       cur.items.push(it);
     }
@@ -121,6 +121,32 @@ function clearDone(file) {
   return lines.length - keep.length;
 }
 
+// Remove one task. `text` must still match: Claude may have edited the file since the panel drew
+// it, and a shifted index must never delete the wrong row.
+function remove(file, idx, text) {
+  const raw = read(file);
+  const t = parse(raw).find((i) => i.type === 'task' && i.idx === idx);
+  if (!t || (text !== undefined && t.text !== text)) return false;
+  const lines = raw.split('\n');
+  lines.splice(t.line, 1);
+  write(file, lines);
+  return true;
+}
+
+// Remove a section: its heading and everything up to the next heading at the same or a shallower
+// level. `title` must still match the heading on that line.
+function removeSection(file, line, title) {
+  const raw = read(file);
+  const items = parse(raw);
+  const h = items.find((i) => i.type === 'heading' && i.line === line);
+  if (!h || h.text !== title) return false;
+  const next = items.find((i) => i.type === 'heading' && i.line > line && i.level <= h.level);
+  const lines = raw.split('\n');
+  lines.splice(line, (next ? next.line : lines.length) - line);
+  write(file, lines);
+  return true;
+}
+
 function newSession(file, title) {
   const raw = read(file);
   const lines = raw ? raw.split('\n') : ['# Tasks', ''];
@@ -134,4 +160,4 @@ function newSession(file, title) {
   return true;
 }
 
-module.exports = { read, parse, sections, sectionLevel, openCount, toggle, add, clearDone, newSession, TASK_RE };
+module.exports = { read, parse, sections, sectionLevel, openCount, toggle, add, clearDone, remove, removeSection, newSession, TASK_RE };

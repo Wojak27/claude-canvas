@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.1
+- Remove tasks from the panel: a × on each row (on hover) removes that task, and a × on a
+  session heading removes the session and its tasks after a confirmation. Both check that the line
+  still says what the panel showed, so an edit Claude made in the meantime never deletes the wrong row.
+
 ## 0.7.0
 - MCP server in the plugin (`plugin/mcp/server.py`, declared in `plugin/.mcp.json`): `canvas_show`,
   `canvas_note`, `canvas_state`, `canvas_widget`, `canvas_tasks`, `canvas_task`, `canvas_live_add`,

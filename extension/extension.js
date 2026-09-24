@@ -205,12 +205,14 @@ function tasksHtml(file) {
     const rows = sec.items.map((i) => {
       if (i.type !== 'task') return `<div class="tnote">${taskText(i.text)}</div>`;
       return `<div class="trow ${i.done ? 'done' : ''}" data-task="${i.idx}" style="margin-left:${i.indent * 14}px">` +
-        `<span class="box">${i.done ? '✓' : ''}</span><span class="ttext">${taskText(i.text)}</span></div>`;
+        `<span class="box">${i.done ? '✓' : ''}</span><span class="ttext">${taskText(i.text)}</span>` +
+        `<button class="trm" data-trm="${i.idx}" data-text="${md.escapeHtml(i.text)}" title="Remove task">×</button></div>`;
     }).join('');
     const head = sec.title
       ? `<div class="shead"><span class="stitle">${md.escapeHtml(sec.title)}</span>` +
         (ts.length ? `<span class="scount">${done}/${ts.length}</span>` +
           `<span class="pbar sbar"><span class="pfill" style="width:${pct}%"></span></span>` : '') +
+        `<button class="trm srm" data-srm="${sec.line}" data-title="${md.escapeHtml(sec.title)}" data-n="${ts.length}" title="Remove this session and its tasks">×</button>` +
         `</div>`
       : '';
     return `<section class="sec ${si === 0 ? 'current' : ''}">${head}${rows || '<div class="tnote">no tasks yet</div>'}</section>`;
@@ -327,6 +329,9 @@ summary .sbar { flex:0 1 52px; min-width:20px; }
 .ttext { min-width:0; overflow-wrap:anywhere; }
 .trow:hover { background:var(--vscode-list-hoverBackground,rgba(128,128,128,.12)); }
 .trow.done .ttext { opacity:.5; text-decoration:line-through; }
+.trm { margin-left:auto; flex:none; border:none; background:none; padding:0 5px; line-height:1.3; opacity:0; }
+.trow:hover .trm, .shead:hover .trm, .trm:focus-visible { opacity:.55; } .trm:hover { opacity:1 !important; }
+.srm { margin-left:2px; }
 .trow .box { flex:none; width:1em; height:1em; line-height:1em; text-align:center; font-size:.85em;
   border:1px solid var(--vscode-panel-border,rgba(128,128,128,.55)); border-radius:3px; }
 .trow.done .box { background:var(--vscode-testing-iconPassed,#3fb950); color:#fff; border-color:transparent; }
@@ -491,6 +496,14 @@ if (nt) {
   });
 }
 document.addEventListener('click', (e) => {
+  const trm = e.target.closest('[data-trm]');
+  if (trm) {
+    trm.closest('.trow').remove();
+    vs.postMessage({ type: 'task', action: 'remove', idx: +trm.dataset.trm, text: trm.dataset.text });
+    return;
+  }
+  const srm = e.target.closest('[data-srm]');
+  if (srm) { vs.postMessage({ type: 'task', action: 'removeSection', line: +srm.dataset.srm, title: srm.dataset.title, n: +srm.dataset.n }); return; }
   const row = e.target.closest('[data-task]');
   if (row) { row.classList.toggle('done'); vs.postMessage({ type: 'task', action: 'toggle', idx: +row.dataset.task }); return; }
   const rr = e.target.closest('[data-rerun]');
@@ -694,6 +707,13 @@ function activate(ctx) {
       if (m.action === 'toggle') tasks.toggle(file, m.idx);
       else if (m.action === 'add' && m.text) tasks.add(file, m.text);
       else if (m.action === 'clearDone') tasks.clearDone(file);
+      else if (m.action === 'remove') tasks.remove(file, m.idx, m.text);
+      else if (m.action === 'removeSection') {
+        const pick = await vscode.window.showWarningMessage(
+          `Remove "${m.title}"${m.n ? ` and its ${m.n} task${m.n === 1 ? '' : 's'}` : ''}?`, { modal: true }, 'Remove');
+        if (pick !== 'Remove') return;
+        tasks.removeSection(file, m.line, m.title);
+      }
       else if (m.action === 'edit') { await vscode.window.showTextDocument(vscode.Uri.file(file)); return; }
       refresh();
     }

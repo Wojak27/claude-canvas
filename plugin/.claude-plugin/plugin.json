@@ -1,7 +1,7 @@
 {
   "name": "claude-canvas",
   "displayName": "Claude Canvas",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Gives Claude Code a place to show you things: images and interactive charts in a VS Code side panel instead of file paths, one board per conversation, blocks that re-run a command on a timer, and a task list you both edit.",
   "author": {
     "name": "Karol Wojtulewicz",

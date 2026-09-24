@@ -40,6 +40,24 @@ const ok = (c, m) => { if (!c) failed++; console.log((c ? 'PASS ' : 'FAIL ') + m
   fs.appendFileSync(ws + '/results/train_log.csv', '41,paired,0.7777,0.4\n');
   await new Promise((r) => setTimeout(r, 6000));
   ok(view.webview.html !== before && view.webview.html.includes('0.7777'), 'widget re-rendered after its CSV changed');
+  // removing tasks and sessions from the panel
+  const tf = top + '/sessions/bbb222/tasks.md';
+  fs.writeFileSync(tf, '# Tasks\n\n## keep\n- [ ] one\n- [x] two\n\n## drop\n- [ ] three\n');
+  await view.onMsg({ type: 'view', value: 'bbb222' });
+  await view.onMsg({ type: 'task', action: 'remove', idx: 1, text: 'something else' });
+  ok(fs.readFileSync(tf, 'utf8').includes('- [x] two'), 'remove refuses when the row changed underneath');
+  await view.onMsg({ type: 'task', action: 'remove', idx: 1, text: 'two' });
+  ok(!fs.readFileSync(tf, 'utf8').includes('two') && fs.readFileSync(tf, 'utf8').includes('one'), 'task \u00d7 removes exactly that row');
+  const dropLine = fs.readFileSync(tf, 'utf8').split('\n').indexOf('## drop');
+  vscode.window.showWarningMessage = async () => undefined;           // user cancels
+  await view.onMsg({ type: 'task', action: 'removeSection', line: dropLine, title: 'drop', n: 1 });
+  ok(fs.readFileSync(tf, 'utf8').includes('## drop'), 'cancelled section removal keeps it');
+  vscode.window.showWarningMessage = async () => 'Remove';            // user confirms
+  await view.onMsg({ type: 'task', action: 'removeSection', line: dropLine, title: 'drop', n: 1 });
+  const left = fs.readFileSync(tf, 'utf8');
+  ok(!left.includes('drop') && !left.includes('three') && left.includes('## keep') && left.includes('one'), 'section \u00d7 removes that session only');
+  ok(/data-trm=/.test(view.webview.html) && /data-srm=/.test(view.webview.html), 'rows and session headers carry remove buttons');
+
   // a new conversation becomes the followed one
   await view.onMsg({ type: 'view', value: 'follow' });
   fs.mkdirSync(top + '/sessions/ccc333/feed', { recursive: true });
