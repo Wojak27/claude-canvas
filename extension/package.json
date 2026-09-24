@@ -3,7 +3,7 @@
   "displayName": "Claude Canvas",
   "description": "A live board Claude Code can write to: one per conversation, with interactive widgets, live command output, notes and images.",
   "icon": "media/icon.png",
-  "version": "0.7.2",
+  "version": "0.8.0",
   "publisher": "local",
   "license": "MIT",
   "engines": {
@@ -69,6 +69,10 @@
       {
         "command": "claudeCanvas.newSession",
         "title": "Claude Canvas: Start Task Session"
+      },
+      {
+        "command": "claudeCanvas.toggleSystem",
+        "title": "Claude Canvas: Toggle System Monitor"
       }
     ],
     "configuration": {
@@ -107,6 +111,11 @@
           "type": "number",
           "default": 20,
           "description": "Conversations listed in the board's picker, most recently active first."
+        },
+        "claudeCanvas.systemMonitor": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show CPU, memory, disk and GPU use of this machine (the remote, over Remote-SSH) in a strip above Tasks."
         }
       }
     }

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.0
+- System monitor (`claudeCanvas.systemMonitor`, or the command Claude Canvas: Toggle System
+  Monitor): a strip above Tasks with CPU and GPU use (with sparklines), memory, disk, and, where the
+  site provides the tools, storage quotas by size and file count plus the compute allocation (NSC:
+  `nscquota`, `projinfo`). Lock warnings are shown verbatim. Updates in place every 3 s while a
+  board is visible; quotas every 5 minutes. Meters go amber from 70 % and red from 90 %, and the
+  value is always printed beside them.
+
 ## 0.7.2
 - An icon: an eye whose pupil is a spark. The panel is about seeing what the assistant made, so
   the mark says the same thing. Generated with Qwen-Image-2.1, background cut to alpha.

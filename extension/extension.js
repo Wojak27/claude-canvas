@@ -6,6 +6,7 @@ const md = require('./markdown.js');
 const tasks = require('./tasks.js');
 const live = require('./live.js');
 const widgets = require('./widgets.js');
+const system = require('./system.js');
 
 const IMG_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp', '.avif']);
 const TEXT_EXT = new Set(['.md', '.markdown', '.txt', '.log', '.json', '.csv']);
@@ -35,6 +36,8 @@ const boardDir = (id) => {
 // Live blocks run scripts from the workspace, so only in a trusted one, and only when enabled.
 const liveAllowed = () => vscode.workspace.isTrusted && cfg().get('liveBlocks', true);
 let runner = null;
+let sampler = null;
+const sysOn = () => cfg().get('systemMonitor', false);
 
 function ensureDirs() {
   const dir = canvasDir();
@@ -332,6 +335,27 @@ summary .sbar { flex:0 1 52px; min-width:20px; }
 .trm { margin-left:auto; flex:none; border:none; background:none; padding:0 5px; line-height:1.3; opacity:0; }
 .trow:hover .trm, .shead:hover .trm, .trm:focus-visible { opacity:.55; } .trm:hover { opacity:1 !important; }
 .srm { margin-left:2px; }
+/* system strip: meters carry severity (accent < 70 %, warning, critical >= 90 %); the value is always printed */
+.sys { margin:10px 0 4px; padding:6px 10px 7px; border-radius:8px; font-size:.85em;
+  border:1px solid var(--vscode-panel-border,rgba(128,128,128,.25)); background:var(--vscode-editorWidget-background,rgba(128,128,128,.05)); }
+.syshead { display:flex; align-items:center; gap:8px; font-weight:600; letter-spacing:.03em; text-transform:uppercase;
+  font-size:.9em; opacity:.8; margin-bottom:3px; } .syshead .x, .syshead .cmeta { margin-left:auto; text-transform:none; font-weight:400; }
+/* one grid for every row, so all bars start and end at the same x and compare at a glance */
+.sysgrid { display:grid; grid-template-columns:auto minmax(36px,1fr) auto 64px; column-gap:8px; row-gap:5px; align-items:center; }
+.sysrow { display:contents; }
+.syl { opacity:.75; white-space:nowrap; }
+.sysbar { min-width:36px; height:6px; border-radius:3px; overflow:hidden; background:rgba(42,120,214,.2); }
+.sysbar > span { display:block; height:100%; border-radius:3px; background:#2a78d6; }
+.sysbar.warn { background:rgba(250,178,25,.22); } .sysbar.warn > span { background:#fab219; }
+.sysbar.crit { background:rgba(208,59,59,.22); } .sysbar.crit > span { background:#d03b3b; }
+.syv { white-space:nowrap; font-variant-numeric:tabular-nums; opacity:.9; }
+.sysspark { flex:none; width:64px; height:16px; overflow:visible; }
+.syssub { grid-column:1 / -1; font-size:.85em; letter-spacing:.03em; text-transform:uppercase; opacity:.6; margin:4px 0 0; }
+.syswarn { grid-column:1 / -1; margin:1px 0; padding:3px 7px; border-radius:5px; border-left:3px solid #d03b3b; background:rgba(208,59,59,.12); }
+.sysspark path { fill:none; stroke:var(--vscode-descriptionForeground,#898781); stroke-width:1.5; opacity:.7; }
+.sysspark circle { fill:#2a78d6; }
+body.vscode-dark .sysbar { background:rgba(57,135,229,.22); } body.vscode-dark .sysbar > span, body.vscode-dark .sysspark circle { background:#3987e5; fill:#3987e5; }
+body.vscode-dark .sysbar.warn > span { background:#fab219; } body.vscode-dark .sysbar.crit > span { background:#d03b3b; }
 .trow .box { flex:none; width:1em; height:1em; line-height:1em; text-align:center; font-size:.85em;
   border:1px solid var(--vscode-panel-border,rgba(128,128,128,.55)); border-radius:3px; }
 .trow.done .box { background:var(--vscode-testing-iconPassed,#3fb950); color:#fff; border-color:transparent; }
@@ -502,6 +526,7 @@ document.addEventListener('click', (e) => {
     vs.postMessage({ type: 'task', action: 'remove', idx: +trm.dataset.trm, text: trm.dataset.text });
     return;
   }
+  if (e.target.closest('[data-sysoff]')) { vs.postMessage({ type: 'sysoff' }); return; }
   const srm = e.target.closest('[data-srm]');
   if (srm) { vs.postMessage({ type: 'task', action: 'removeSection', line: +srm.dataset.srm, title: srm.dataset.title, n: +srm.dataset.n }); return; }
   const row = e.target.closest('[data-task]');
@@ -522,6 +547,11 @@ const store = {
 if (window.CanvasWidgets) CanvasWidgets.mount(document, store);
 // live blocks are swapped in place, so a refresh never clobbers a half-typed task
 window.addEventListener('message', (e) => {
+  if (e.data && e.data.type === 'sys') {
+    const s = document.getElementById('sys');
+    if (s) s.outerHTML = e.data.html;
+    return;
+  }
   const lv = document.getElementById('live');
   if (e.data && e.data.type === 'live' && lv) {
     lv.innerHTML = e.data.html;
@@ -564,6 +594,7 @@ function buildHtml(b) {
   const empty = !state && !cards && !liveBlocks
     ? '<div class="empty">Nothing on this board yet.<br>Claude writes <code>state.md</code> and drops cards into <code>feed/</code>.</div>' : '';
   return page(b, `${bar}
+${sysOn() && sampler ? system.html(sampler.last()) : ''}
 ${tasksHtml(path.join(dir, 'tasks.md'))}
 ${state ? `<div class="state" data-scope="state">${state}</div>` : ''}
 <div id="live">${liveBlocks}</div>
@@ -651,6 +682,21 @@ function activate(ctx) {
     }
   }, live.MIN_EVERY * 1000);
   ctx.subscriptions.push({ dispose: () => { clearInterval(ticker); runner.dispose(); } });
+
+  // System monitor: sample every 3 s while it is on and a board is showing, swap the strip in place.
+  sampler = system.createSampler(workspaceRoot);
+  const sysTick = () => {
+    if (!sysOn()) return;
+    const shown = [...boards].filter((b) => !b.card && visible(b));
+    if (!shown.length) return;
+    const h = system.html(sampler.sample());
+    for (const b of shown) b.webview.postMessage({ type: 'sys', html: h });
+  };
+  const sysTimer = setInterval(sysTick, 3000);
+  ctx.subscriptions.push({ dispose: () => clearInterval(sysTimer) });
+  ctx.subscriptions.push(vscode.commands.registerCommand('claudeCanvas.toggleSystem', async () => {
+    await cfg().update('systemMonitor', !sysOn(), vscode.ConfigurationTarget.Global);
+  }));
   ctx.subscriptions.push(vscode.workspace.onDidGrantWorkspaceTrust(() => { refresh(); tickLive(true); }));
 
   const openTab = (view, card) => {
@@ -698,6 +744,8 @@ function activate(ctx) {
       try { fs.unlinkSync(m.path); } catch (e) {}
       try { fs.unlinkSync(m.path.replace(/\.[^.]+$/, '.caption.md')); } catch (e) {}
       refresh();
+    } else if (m.type === 'sysoff') {
+      await cfg().update('systemMonitor', false, vscode.ConfigurationTarget.Global);
     } else if (m.type === 'rerun') {
       if (runner && liveAllowed()) { runner.invalidate(path.join(dir(), 'live', m.name + '.sh')); tickLive(false); }
     } else if (m.type === 'clear') {
@@ -814,7 +862,10 @@ function activate(ctx) {
   setTimeout(consumeSentinel, 400);
 
   ctx.subscriptions.push(vscode.workspace.onDidChangeConfiguration((e) => {
-    if (e.affectsConfiguration('claudeCanvas')) { refresh(); tickLive(false); }
+    if (e.affectsConfiguration('claudeCanvas')) {
+      if (e.affectsConfiguration('claudeCanvas.systemMonitor') && sysOn()) sampler.sample();
+      refresh(); tickLive(false);
+    }
   }));
 }
 

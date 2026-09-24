@@ -10,7 +10,7 @@
       "name": "claude-canvas",
       "source": "./plugin",
       "description": "Let Claude Code show you images, interactive charts, live status and a shared task list in a VS Code side panel, one board per conversation.",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "author": {
         "name": "Karol Wojtulewicz",
         "url": "https://github.com/Wojak27"

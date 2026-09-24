@@ -161,6 +161,20 @@ project-wide.
 its own, which is handy for a chart. Tabs keep their own choice of conversation and come back
 after a window reload.
 
+### The machine, at a glance
+
+Run **Claude Canvas: Toggle System Monitor** (or set `claudeCanvas.systemMonitor`) for a strip
+above Tasks that shows the machine the extension runs on. Over Remote-SSH, that is the remote:
+
+- CPU (whole machine) and GPUs, each with a one-minute sparkline
+- memory, and free space on the workspace's filesystem
+- **storage quotas and the compute allocation**, where the site has a tool for them. On NSC
+  systems (Berzelius, Tetralith) it reads `nscquota` and `projinfo`, shows each path against its
+  soft quota by both size and file count, and repeats any lock warning verbatim.
+
+Meters are blue, then amber from 70 % and red from 90 %, and the number is always printed next to
+them. The strip updates in place every 3 s while a board is visible; quotas refresh every 5 minutes.
+
 ### Light theme, obviously
 
 <img src="media/board-light.png" alt="The same board rendered in a light VS Code theme" width="300">
@@ -265,6 +279,7 @@ megabyte of parser.
 | `claudeCanvas.autoReveal` | `always` | Reveal the board when a new card appears |
 | `claudeCanvas.liveBlocks` | `true` | Re-run the scripts in `live/` while the board is visible |
 | `claudeCanvas.maxConversations` | `20` | Conversations listed in the picker, most recent first |
+| `claudeCanvas.systemMonitor` | `false` | CPU, memory, disk, GPUs and quotas in a strip above Tasks |
 
 Commands, under `Claude Canvas:` — Show Board, Open Board in Editor Tab, Open tasks.md,
 Start Task Session, Clear Feed, Reveal Canvas Folder.

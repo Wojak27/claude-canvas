@@ -1,6 +1,6 @@
 // Just enough of the VS Code API to activate the extension in plain node and capture board HTML.
 const path = require('path');
-const cfg = { folder: '.claude/canvas', newestFirst: true, maxCards: 60, autoReveal: 'always', liveBlocks: true, maxConversations: 20 };
+const cfg = { folder: '.claude/canvas', newestFirst: true, maxCards: 60, autoReveal: 'always', liveBlocks: true, maxConversations: 20, systemMonitor: process.env.SYS === '1' };
 const Uri = { file: (p) => ({ fsPath: p, toString: () => 'file://' + p }), joinPath: (u, ...s) => Uri.file(path.join(u.fsPath, ...s)) };
 const reg = { views: {}, serializers: {}, commands: {} };
 const ev = () => () => ({ dispose() {} });
