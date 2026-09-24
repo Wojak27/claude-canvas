@@ -116,12 +116,18 @@
   },
   "homepage": "https://github.com/Wojak27/claude-canvas#readme",
   "keywords": [
+    "agent",
+    "charts",
     "claude",
     "claude-code",
-    "agent",
     "dashboard",
     "images",
+    "live",
+    "mcp",
     "tasks",
     "webview"
-  ]
+  ],
+  "bugs": {
+    "url": "https://github.com/Wojak27/claude-canvas/issues"
+  }
 }

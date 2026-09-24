@@ -4,11 +4,20 @@
     "name": "Karol Wojtulewicz",
     "url": "https://github.com/Wojak27"
   },
+  "description": "Claude Canvas: a VS Code side panel Claude Code writes to, with images, interactive charts, live status and a shared task list, one board per conversation.",
   "plugins": [
     {
       "name": "claude-canvas",
       "source": "./plugin",
-      "description": "Let Claude Code show you images, current state and a shared task list in a VS Code side panel."
+      "description": "Let Claude Code show you images, interactive charts, live status and a shared task list in a VS Code side panel, one board per conversation.",
+      "version": "0.7.0",
+      "author": {
+        "name": "Karol Wojtulewicz",
+        "url": "https://github.com/Wojak27"
+      },
+      "homepage": "https://github.com/Wojak27/claude-canvas#readme",
+      "repository": "https://github.com/Wojak27/claude-canvas",
+      "license": "MIT"
     }
   ]
 }

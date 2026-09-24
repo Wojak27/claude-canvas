@@ -6,7 +6,7 @@ ver="$(node -p "require('$here/package.json').version")"
 out="$here/claude-canvas-$ver.vsix"
 tmp="$(mktemp -d)"
 mkdir -p "$tmp/extension"
-cp -r "$here"/*.js "$here/package.json" "$here/media" "$here/README.md" "$tmp/extension/"
+cp -r "$here"/*.js "$here/package.json" "$here/media" "$here/README.md" "$here/LICENSE" "$tmp/extension/"
 
 # every local require must have shipped, or the extension dies at load time
 node -e '

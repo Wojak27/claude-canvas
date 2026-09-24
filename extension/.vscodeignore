@@ -1,0 +1,4 @@
+# not shipped in the .vsix
+*.vsix
+build.sh
+.vscodeignore
