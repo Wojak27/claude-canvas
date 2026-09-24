@@ -21,6 +21,22 @@ if [ -n "$sid" ]; then
 import json, os, datetime
 json.dump({"id": os.environ["CANVAS_ID"], "title": "", "started": datetime.datetime.now().isoformat(timespec="seconds")},
           open(os.environ["CANVAS_META"], "w"), indent=2)'
+  # the MCP server can't see CLAUDE_ENV_FILE and outlives /clear: record this session against the
+  # Claude Code process, which the server finds by walking up its own parents on every call.
+  # Stop at that process, so nothing shared by several sessions (the editor) gets an entry.
+  mkdir -p "$top/.pids"
+  for f in "$top/.pids"/*; do [ -e "$f" ] && { [ -d "/proc/${f##*/}" ] || rm -f "$f"; }; done
+  if [ -n "${CLAUDE_PID:-}" ]; then
+    printf '%s\n' "$sid" > "$top/.pids/$CLAUDE_PID"
+  else
+    pid=$PPID
+    for _ in 1 2 3 4 5 6; do
+      [ "$pid" -gt 1 ] 2>/dev/null || break
+      printf '%s\n' "$sid" > "$top/.pids/$pid"
+      [ "$(cat /proc/$pid/comm 2>/dev/null)" = claude ] && break
+      pid="$(awk '{print $4}' /proc/$pid/stat 2>/dev/null)" || break
+    done
+  fi
   # every Bash call in this session now writes to this conversation's board
   if [ -n "${CLAUDE_ENV_FILE:-}" ]; then
     { printf 'export CLAUDE_CANVAS_DIR=%q\n' "$top"; printf 'export CLAUDE_CANVAS_SESSION=%q\n' "$sid"; } >> "$CLAUDE_ENV_FILE"

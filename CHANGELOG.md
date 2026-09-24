@@ -1,37 +1,16 @@
 # Changelog
 
-## 0.3.1
-- Package every `.js` file, and fail the build if a local `require()` target is missing.
-  `tasks.js` had been left out of 0.3.0, so the extension threw on load and the view never resolved.
-
-## 0.3.0
-- Tasks: a collapsible block at the top of the board, backed by `tasks.md`.
-  Click a row to tick it, add rows inline, `@mentions` and `#tags` as chips, open count as a badge.
-- A lone `#` heading is treated as the document title, so sessions are always written one level below it.
-
-## 0.1.0
-- Board in the activity bar: pinned `state.md` plus a feed of image and markdown cards.
-- Zero-dependency markdown renderer, `progress` fenced blocks, theme-aware styling.
-- `canvas` CLI for pushing content from a shell.
-
-## 0.4.0
-- `canvas open`: a `.open` sentinel file brings the panel up, so anything that can write a file
-  can reveal the board — including over Remote-SSH.
-- Claude Code plugin: a skill, `canvas` on Claude's PATH, a SessionStart hook that opens the board,
-  and a PostToolUse hook that puts any image Claude reads on the feed.
-
-## 0.4.1
-- Caption sidecars (`<image>.caption.md`) no longer render as a card of their own on top of the
-  image card they belong to.
-- README: screenshots and an animation, all generated from the real renderer by `scripts/`.
-
-## 0.5.0
-- Live blocks: `live/<name>.sh` is re-run on the interval in its `# every:` header while the board
-  is visible, and its stdout is rendered as a pinned block. Updates are swapped in place, so a
-  refresh never clears a half-typed task. Runs have a 30 s timeout that kills the whole process
-  group, never overlap, and a failure keeps the last good output. Trusted workspaces only;
-  `claudeCanvas.liveBlocks` turns them off.
-- `canvas live add|run|ls|rm`.
+## 0.7.0
+- MCP server in the plugin (`plugin/mcp/server.py`, declared in `plugin/.mcp.json`): `canvas_show`,
+  `canvas_note`, `canvas_state`, `canvas_widget`, `canvas_tasks`, `canvas_task`, `canvas_live_add`,
+  `canvas_live_status`, `canvas_live_rm`, `canvas_title`, `canvas_open`. JSON arguments,
+  structured reads, validation failures as tool errors. Writes go through `bin/canvas`.
+- The SessionStart hook records the session against the Claude Code process in
+  `.claude/canvas/.pids/`, which is how the MCP server finds its conversation and follows `/clear`.
+  The panel ignores top-level bookkeeping files, so they never count as Shared-board activity.
+- The skill prefers the MCP tools and keeps the CLI for scripts and jobs.
+- CI: `.github/workflows/test.yml` runs `tests/run.sh` (36 checks) on every push and PR.
+- CHANGELOG is newest first.
 
 ## 0.6.0
 - One board per conversation: `sessions/<id>/` under the canvas folder, picked by
@@ -52,3 +31,36 @@
   the CLI runs live blocks from the same place the extension does. The CLI no longer treats
   `~/.claude` as a project.
 - No placeholder `state.md`: it made the Shared board look like the latest activity.
+
+## 0.5.0
+- Live blocks: `live/<name>.sh` is re-run on the interval in its `# every:` header while the board
+  is visible, and its stdout is rendered as a pinned block. Updates are swapped in place, so a
+  refresh never clears a half-typed task. Runs have a 30 s timeout that kills the whole process
+  group, never overlap, and a failure keeps the last good output. Trusted workspaces only;
+  `claudeCanvas.liveBlocks` turns them off.
+- `canvas live add|run|ls|rm`.
+
+## 0.4.1
+- Caption sidecars (`<image>.caption.md`) no longer render as a card of their own on top of the
+  image card they belong to.
+- README: screenshots and an animation, all generated from the real renderer by `scripts/`.
+
+## 0.4.0
+- `canvas open`: a `.open` sentinel file brings the panel up, so anything that can write a file
+  can reveal the board — including over Remote-SSH.
+- Claude Code plugin: a skill, `canvas` on Claude's PATH, a SessionStart hook that opens the board,
+  and a PostToolUse hook that puts any image Claude reads on the feed.
+
+## 0.3.1
+- Package every `.js` file, and fail the build if a local `require()` target is missing.
+  `tasks.js` had been left out of 0.3.0, so the extension threw on load and the view never resolved.
+
+## 0.3.0
+- Tasks: a collapsible block at the top of the board, backed by `tasks.md`.
+  Click a row to tick it, add rows inline, `@mentions` and `#tags` as chips, open count as a badge.
+- A lone `#` heading is treated as the document title, so sessions are always written one level below it.
+
+## 0.1.0
+- Board in the activity bar: pinned `state.md` plus a feed of image and markdown cards.
+- Zero-dependency markdown renderer, `progress` fenced blocks, theme-aware styling.
+- `canvas` CLI for pushing content from a shell.

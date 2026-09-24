@@ -6,7 +6,13 @@ description: Show the user images, interactive charts and tables (widgets), prog
 # Claude Canvas
 
 A VS Code side panel the user can see while you work. You write files, the panel re-renders.
-The `canvas` command is on your PATH.
+
+**Two ways in, same board.** Prefer the `canvas_*` MCP tools (`canvas_show`, `canvas_note`,
+`canvas_state`, `canvas_widget`, `canvas_tasks`, `canvas_task`, `canvas_live_add`,
+`canvas_live_status`, `canvas_live_rm`, `canvas_title`, `canvas_open`): arguments are JSON, so no
+shell quoting, and reads come back structured. The `canvas` command on your PATH does the same
+things from Bash — use it inside scripts, cron jobs and Slurm jobs, or if the tools are missing.
+The examples below use the CLI; each maps one-to-one onto a tool.
 
 **Every conversation has its own board.** `canvas` writes to this conversation's board
 automatically (the plugin sets `CLAUDE_CANVAS_SESSION`); you never touch another conversation's

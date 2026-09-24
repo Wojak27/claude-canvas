@@ -203,8 +203,22 @@ The plugin wires Claude into it:
 
 Turn the automatic parts off with `CLAUDE_CANVAS_AUTO_OPEN=0` and `CLAUDE_CANVAS_AUTO_SHOW=0`.
 
-Allow the CLI once and it never prompts: add `"Bash(canvas *)"` to `permissions.allow` in
-`~/.claude/settings.json`. A plugin can't grant itself permissions.
+The plugin also ships an **MCP server** (`plugin/mcp/server.py`, standard-library Python) with
+typed tools over the same board: `canvas_show`, `canvas_note`, `canvas_state`, `canvas_widget`,
+`canvas_tasks`, `canvas_task`, `canvas_live_add`, `canvas_live_status`, `canvas_live_rm`,
+`canvas_title` and `canvas_open`. Arguments are JSON, so there is no shell quoting, reads come
+back structured (the task list, each live block's last exit code and stderr), and errors come back
+as tool errors naming the problem. Every write goes through `bin/canvas`, so the tools and the CLI
+cannot drift apart. The server finds its conversation through a small record the SessionStart
+hook writes, `.claude/canvas/.pids/<claude pid>`, and it follows `/clear`.
+
+Allow both once and they never prompt. A plugin can't grant itself permissions, so add these to
+`permissions.allow` in `~/.claude/settings.json`:
+
+```json
+"Bash(canvas *)",
+"mcp__plugin_claude-canvas_canvas__*"
+```
 
 ## The `canvas` command
 
@@ -274,8 +288,9 @@ Issues and PRs welcome — it's a small codebase and an easy one to poke at.
 ```bash
 extension/          the panel: extension.js, markdown.js, tasks.js, live.js, widgets.js,
                     media/widgets.js (the chart renderer), build.sh
-tests/              ./tests/run.sh: CLI, hooks and the extension against a mocked VS Code API
-plugin/             the Claude Code plugin: skill, hooks, bin/canvas
+tests/              ./tests/run.sh: hooks, CLI, MCP server, and the extension against a mocked
+                    VS Code API; CI runs it on every push
+plugin/             the Claude Code plugin: skill (+ WIDGETS.md), hooks, bin/canvas, mcp/server.py
 scripts/            screenshot pipeline — ./scripts/screenshots.sh regenerates every image above
 ```
 

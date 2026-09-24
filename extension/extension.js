@@ -759,7 +759,7 @@ function activate(ctx) {
   const onFs = (relRaw) => {
     const rel = String(relRaw || '').split(path.sep).join('/');
     if (!rel || rel === '.open') { schedule(null, false); return; }
-    if (rel === '.workspace' || rel === '.gitignore') return;
+    if (rel.startsWith('.')) return;   // bookkeeping (.pids/, .workspace, .gitignore), not board content
     let id = SHARED, rest = rel;
     if (rel.startsWith('sessions/')) {
       const parts = rel.split('/');

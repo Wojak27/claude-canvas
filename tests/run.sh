@@ -46,6 +46,9 @@ check "valid widget is written" "ls .claude/canvas/sessions/aaa111/feed | grep -
 check "unknown widget type is refused" "! echo '{\"type\":\"pie\"}' | '$C' widget 2>/dev/null"
 check "missing src is refused" "! echo '{\"type\":\"line\",\"src\":\"nope.csv\",\"x\":\"a\",\"y\":\"b\"}' | '$C' widget 2>/dev/null"
 
+echo "--- mcp server"
+WS="$T/ws" python3 "$here/mcp.test.py" || fail=1
+
 echo "--- extension"
 WS="$T/ws" timeout 60 "$NODE" "$here/extension.test.js" || fail=1
 exit $fail
