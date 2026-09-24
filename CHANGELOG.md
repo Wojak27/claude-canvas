@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.7.2
+- An icon: an eye whose pupil is a spark. The panel is about seeing what the assistant made, so
+  the mark says the same thing. Generated with Qwen-Image-2.1, background cut to alpha.
+- The activity-bar glyph is redrawn to match: monochrome SVG, still legible at 16 px.
+- The extension now carries a marketplace icon (`extension/media/icon.png`).
+
+
 ## 0.7.1
 - Remove tasks from the panel: a × on each row (on hover) removes that task, and a × on a
   session heading removes the session and its tasks after a confirmation. Both check that the line

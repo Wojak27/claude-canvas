@@ -2,7 +2,8 @@
   "name": "claude-canvas",
   "displayName": "Claude Canvas",
   "description": "A live board Claude Code can write to: one per conversation, with interactive widgets, live command output, notes and images.",
-  "version": "0.7.1",
+  "icon": "media/icon.png",
+  "version": "0.7.2",
   "publisher": "local",
   "license": "MIT",
   "engines": {

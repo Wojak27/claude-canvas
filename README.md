@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="media/icon.png" alt="Claude Canvas icon: an eye with a spark for a pupil" width="104">
+
 # Claude Canvas
 
 **Claude Code can see your images. You can't see its.**
